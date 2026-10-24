@@ -40,6 +40,7 @@ describe('WaitlistController', () => {
   describe('join', () => {
     it('delegates to service.join and returns result', async () => {
       const dto = { email: 'founder@example.com' };
+      // service.join already returns a sanitised DTO (no unsubscribeToken)
       const entry = { id: '1', email: dto.email };
       service.join.mockResolvedValue(entry as any);
 
@@ -47,6 +48,16 @@ describe('WaitlistController', () => {
 
       expect(service.join).toHaveBeenCalledWith(dto);
       expect(result).toBe(entry);
+    });
+
+    it('does not expose unsubscribeToken in the response', async () => {
+      const dto = { email: 'founder@example.com' };
+      const sanitised = { id: '1', email: dto.email, referralCode: 'ABCD1234' };
+      service.join.mockResolvedValue(sanitised as any);
+
+      const result = await controller.join(dto as any);
+
+      expect(result).not.toHaveProperty('unsubscribeToken');
     });
   });
 
