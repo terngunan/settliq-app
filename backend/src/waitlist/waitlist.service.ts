@@ -9,6 +9,7 @@ import { Between, FindOptionsWhere, MoreThanOrEqual, LessThanOrEqual, Repository
 import { randomBytes } from 'crypto';
 import { WaitlistEntry } from './entities/waitlist.entity';
 import { JoinWaitlistDto } from './dto/join-waitlist.dto';
+import { WaitlistEntryResponseDto } from './dto/waitlist-entry-response.dto';
 
 export interface ExportCsvOptions {
   dateFrom?: string;
@@ -22,7 +23,7 @@ export class WaitlistService {
     private readonly waitlistRepo: Repository<WaitlistEntry>,
   ) {}
 
-  async join(dto: JoinWaitlistDto): Promise<WaitlistEntry> {
+  async join(dto: JoinWaitlistDto): Promise<WaitlistEntryResponseDto> {
     const existing = await this.waitlistRepo.findOne({ where: { email: dto.email } });
     if (existing) {
       throw new ConflictException('Email is already on the waitlist');
@@ -48,7 +49,14 @@ export class WaitlistService {
       }
     }
 
-    return saved;
+    // Return a sanitised response – unsubscribeToken is a secret used only
+    // for one-click unsubscribe links in emails and must never be exposed in
+    // HTTP response bodies.
+    const { unsubscribeToken: _stripped, ...response } = saved as WaitlistEntry & {
+      businessName?: string;
+      country?: string;
+    };
+    return response as WaitlistEntryResponseDto;
   }
 
   /**

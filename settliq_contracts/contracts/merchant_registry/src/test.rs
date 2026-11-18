@@ -520,3 +520,60 @@ fn test_cancel_admin_proposal_unauthorized_reverts() {
     // Non-admin must not be able to cancel a proposal.
     client.cancel_admin_proposal(&attacker);
 }
+
+// ---------------------------------------------------------------------------
+// register_merchant – empty name guard (#105)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Merchant name cannot be empty")]
+fn test_register_merchant_empty_name_panics() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &String::from_str(&env, ""));
+}
+
+// ---------------------------------------------------------------------------
+// merchants() – page_size cap (#106)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_merchants_page_size_capped_at_max() {
+    let (env, client, admin) = setup();
+
+    // Register 5 merchants.
+    for _ in 0..5 {
+        let m = Address::generate(&env);
+        client.register_merchant(&admin, &m, &sample_name(&env));
+    }
+
+    // Requesting a huge page_size must not panic and must return at most 5.
+    let page = client.merchants(&0, &u32::MAX);
+    assert!(
+        page.len() <= 5,
+        "page_size must be capped; got {} results",
+        page.len()
+    );
+}
+
+#[test]
+fn test_merchants_page_size_capped_returns_correct_slice() {
+    let (env, client, admin) = setup();
+
+    // Register exactly 3 merchants.
+    let mut addresses = soroban_sdk::Vec::new(&env);
+    for _ in 0..3 {
+        let m = Address::generate(&env);
+        client.register_merchant(&admin, &m, &sample_name(&env));
+        addresses.push_back(m);
+    }
+
+    // A page_size of 2 should still return at most 2 results.
+    let page = client.merchants(&0, &2);
+    assert_eq!(page.len(), 2);
+
+    // Page 1 should return the remaining 1 merchant.
+    let page2 = client.merchants(&1, &2);
+    assert_eq!(page2.len(), 1);
+}

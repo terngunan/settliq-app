@@ -43,6 +43,9 @@ pub struct MerchantRecord {
 const DEFAULT_FEE_BPS: u32 = 150;
 /// Upper bound on the fee rate an admin can set for a merchant: 1000 bps (10%).
 const MAX_FEE_BPS: u32 = 1000;
+/// Maximum number of merchants returned in a single paginated query.
+/// Prevents runaway storage reads / gas exhaustion from unbounded page sizes.
+const MAX_PAGE_SIZE: u32 = 100;
 
 /// Storage keys used by the registry.
 #[contracttype]
@@ -238,6 +241,10 @@ impl MerchantRegistryContract {
     pub fn register_merchant(env: Env, caller: Address, merchant: Address, name: String) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+
+        if name.len() == 0 {
+            panic!("Merchant name cannot be empty");
+        }
 
         let key = DataKey::Merchant(merchant.clone());
         if env.storage().persistent().has(&key) {
@@ -492,6 +499,9 @@ impl MerchantRegistryContract {
             return result;
         }
 
+        // Cap the page size to prevent unbounded storage reads and gas exhaustion.
+        let effective_page_size = page_size.min(MAX_PAGE_SIZE);
+
         let total: u32 = env
             .storage()
             .instance()
@@ -499,11 +509,11 @@ impl MerchantRegistryContract {
             .unwrap_or(0);
 
         // Number of active merchants to skip before we start collecting.
-        let skip = page.saturating_mul(page_size);
+        let skip = page.saturating_mul(effective_page_size);
         let mut skipped: u32 = 0;
         let mut i: u32 = 0;
 
-        while i < total && (result.len() as u32) < page_size {
+        while i < total && (result.len() as u32) < effective_page_size {
             if let Some(addr) = env
                 .storage()
                 .persistent()
