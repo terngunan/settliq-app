@@ -11,6 +11,8 @@ import { WaitlistEntry } from './entities/waitlist.entity';
 import { JoinWaitlistDto } from './dto/join-waitlist.dto';
 import { WaitlistEntryResponseDto } from './dto/waitlist-entry-response.dto';
 
+const REFERRAL_CODE_MAX_ATTEMPTS: number = 5;
+
 export interface ExportCsvOptions {
   dateFrom?: string;
   dateTo?: string;
