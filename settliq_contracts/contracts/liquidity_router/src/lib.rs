@@ -57,6 +57,14 @@ pub struct DepthThresholdUpdatedEvent {
     pub new_threshold_bps: u32,
 }
 
+// Issue #224: Event emitted when admin ownership is transferred
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminTransferred {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
 #[soroban_sdk::contractclient(name = "AmmClient")]
 pub trait AmmInterface {
     fn get_reserves(env: Env) -> (i128, i128);
@@ -205,6 +213,15 @@ impl LiquidityRouter {
         }
 
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        // Issue #224: Emit audit event for the ownership change
+        env.events().publish(
+            (Symbol::new(&env, "AdminTransferred"),),
+            AdminTransferred {
+                old_admin: stored_admin,
+                new_admin,
+            },
+        );
     }
 
     /// Returns the list of approved pools (issue #69)
@@ -232,72 +249,6 @@ impl LiquidityRouter {
             panic!("pool is not approved");
         }
 
-        // Issue #1086: Query AMM reserves via cross-contract call using the
-        // fallible `try_get_reserves` pattern. A previously-approved pool may
-        // have been upgraded to a contract that no longer implements
-        // `AmmInterface`, or may simply revert. In that case we must not let
-        // the raw panic propagate and break every `check_and_route` call.
-        //
-        // Expected behavior: a failed `get_reserves` call is treated the same
-        // as a shallow pool — we fall back to `Route::StellarClassicDEX` and
-        // emit `FallbackRouteUsed` (with reserve = 0, since no reserve could
-        // be read) rather than propagating the error.
-        let amm_client = AmmClient::new(&env, &pool_address);
-        let reserves = match amm_client.try_get_reserves() {
-            Ok(Ok((ra, rb))) => Some((ra, rb)),
-            Ok(Err(_)) | Err(_) => None,
-        };
+        // Issue #1086: Query AMM reserves via cross-contract call using t
 
-        let (reserve_a, reserve_b) = match reserves {
-            Some(r) => r,
-            None => {
-                // Cross-contract call failed or reverted: degrade gracefully to
-                // the classic DEX fallback instead of panicking.
-                env.events().publish(
-                    (Symbol::new(&env, "FallbackRouteUsed"),),
-                    FallbackRouteUsed {
-                        pool_id: pool_address,
-                        amount: amount_in,
-                        reserve: 0,
-                    },
-                );
-                return Route::StellarClassicDEX;
-            }
-        };
-
-        // Issue #1081: Validate both AMM reserves before trusting them.
-        // A misbehaving or malicious pool could return negative or nonsensical
-        // values, which would otherwise corrupt the depth check.
-        if reserve_a <= 0 || reserve_b <= 0 {
-            panic!("invalid pool reserves");
-        }
-
-        // Issue #23: Select the relevant reserve based on swap direction.
-        // A swap consuming token A reduces reserve_a; a swap consuming token B
-        // reduces reserve_b. Using the wrong reserve would mis-evaluate depth
-        // for asymmetric pools.
-        let relevant_reserve = if is_token_a { reserve_a } else { reserve_b };
-
-        // Issue #1085: Depth check against the admin-configurable threshold.
-        // amount_in must be less than threshold_bps of the relevant reserve:
-        //   S < R * bps / 10000
-        let threshold_bps: u32 = env.storage().instance()
-            .get(&DataKey::DepthThresholdBps)
-            .unwrap_or(DEFAULT_DEPTH_THRESHOLD_BPS);
-
-        if amount_in < relevant_reserve * (threshold_bps as i128) / 10_000 {
-            Route::SorobanAMM
-        } else {
-            // Emit FallbackRouteUsed event
-            env.events().publish(
-                (Symbol::new(&env, "FallbackRouteUsed"),),
-                FallbackRouteUsed {
-                    pool_id: pool_address,
-                    amount: amount_in,
-                    reserve: relevant_reserve,
-                },
-            );
-            Route::StellarClassicDEX
-        }
-    }
-}
+/* … truncated 2993 chars — edit only what you need near the top … */
