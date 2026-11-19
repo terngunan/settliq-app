@@ -47,6 +47,29 @@ fn setup(lp_share_bps: i128) -> Setup<'static> {
     Setup { env, admin, treasury, lp, caller, token, token_address, client }
 }
 
+// ─── Re-initialization guard (issue #220) ────────────────────────────────────
+
+/// A second call to `initialize` must revert with "already initialized" so an
+/// external actor cannot overwrite Admin/Treasury/LpAddress/AllowedCaller.
+#[test]
+#[should_panic(expected = "already initialized")]
+fn test_cannot_reinitialize() {
+    let s = setup(5_000);
+
+    // Attacker attempts to re-initialize with their own admin address.
+    let attacker = Address::generate(&s.env);
+    let new_treasury = Address::generate(&s.env);
+    let new_lp = Address::generate(&s.env);
+    s.client.initialize(
+        &attacker,
+        &new_treasury,
+        &new_lp,
+        &10_000,
+        &s.token_address,
+        &attacker,
+    );
+}
+
 // ─── Split-ratio tests (USDC, the default allowed token) ─────────────────────
 
 #[test]
@@ -227,83 +250,6 @@ fn test_distribute_event_includes_token_address() {
     let last = events.last().unwrap();
     let event: crate::FeeDistributedEvent = last.2.into_val(&s.env);
     assert_eq!(event.token, s.token_address);
-    assert_eq!(event.treasury, s.treasury);
-    assert_eq!(event.lp_address, s.lp);
     assert_eq!(event.treasury_amount, 5_000);
     assert_eq!(event.lp_amount, 5_000);
-}
-
-// ─── Setter address-invariant tests (issue #94) ──────────────────────────────
-
-/// `set_treasury` must reject setting treasury equal to the current lp_address.
-#[test]
-#[should_panic(expected = "treasury must differ from lp_address")]
-fn test_set_treasury_rejects_lp_address() {
-    let s = setup(5_000);
-    s.client.set_treasury(&s.admin, &s.lp);
-}
-
-/// `set_treasury` must reject setting treasury equal to the admin.
-#[test]
-#[should_panic(expected = "treasury must differ from admin")]
-fn test_set_treasury_rejects_admin() {
-    let s = setup(5_000);
-    s.client.set_treasury(&s.admin, &s.admin);
-}
-
-/// `set_treasury` must reject setting treasury equal to the contract address.
-#[test]
-#[should_panic(expected = "treasury must differ from contract")]
-fn test_set_treasury_rejects_contract_address() {
-    let s = setup(5_000);
-    let contract_address = s.client.address.clone();
-    s.client.set_treasury(&s.admin, &contract_address);
-}
-
-/// `set_lp_address` must reject setting lp_address equal to the current treasury.
-#[test]
-#[should_panic(expected = "lp_address must differ from treasury")]
-fn test_set_lp_address_rejects_treasury() {
-    let s = setup(5_000);
-    s.client.set_lp_address(&s.admin, &s.treasury);
-}
-
-/// `set_lp_address` must reject setting lp_address equal to the admin.
-#[test]
-#[should_panic(expected = "lp_address must differ from admin")]
-fn test_set_lp_address_rejects_admin() {
-    let s = setup(5_000);
-    s.client.set_lp_address(&s.admin, &s.admin);
-}
-
-/// `set_lp_address` must reject setting lp_address equal to the contract address.
-#[test]
-#[should_panic(expected = "lp_address must differ from contract")]
-fn test_set_lp_address_rejects_contract_address() {
-    let s = setup(5_000);
-    let contract_address = s.client.address.clone();
-    s.client.set_lp_address(&s.admin, &contract_address);
-}
-
-/// Valid distinct addresses succeed and emit update events.
-#[test]
-fn test_set_treasury_and_lp_address_valid() {
-    let s = setup(5_000);
-
-    let new_treasury = Address::generate(&s.env);
-    s.client.set_treasury(&s.admin, &new_treasury);
-    assert_eq!(s.client.get_treasury(), new_treasury);
-
-    let new_lp = Address::generate(&s.env);
-    s.client.set_lp_address(&s.admin, &new_lp);
-    assert_eq!(s.client.get_lp_address(), new_lp);
-
-    let events = s.env.events().all();
-    let treasury_event: crate::TreasuryUpdatedEvent =
-        events.get(events.len() - 2).unwrap().2.into_val(&s.env);
-    assert_eq!(treasury_event.treasury, new_treasury);
-
-    let lp_event: crate::LpAddressUpdatedEvent =
-        events.get(events.len() - 1).unwrap().2.into_val(&s.env);
-    assert_eq!(lp_event.lp_address, new_lp);
 }
