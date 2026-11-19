@@ -1,19 +1,14 @@
-import {
-  ConflictException,
-  Injectable,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, FindOptionsWhere, MoreThanOrEqual, LessThanOrEqual, Repository } from 'typeorm';
-import { randomBytes } from 'crypto';
+import { Repository, Between, FindOptionsWhere } from 'typeorm';
 import { WaitlistEntry } from './entities/waitlist.entity';
 import { JoinWaitlistDto } from './dto/join-waitlist.dto';
-import { WaitlistEntryResponseDto } from './dto/waitlist-entry-response.dto';
 
 export interface ExportCsvOptions {
   dateFrom?: string;
   dateTo?: string;
+  country?: string;
+  includeUnsubscribed?: boolean;
 }
 
 @Injectable()
@@ -23,10 +18,12 @@ export class WaitlistService {
     private readonly waitlistRepo: Repository<WaitlistEntry>,
   ) {}
 
-  async join(dto: JoinWaitlistDto): Promise<WaitlistEntryResponseDto> {
-    const existing = await this.waitlistRepo.findOne({ where: { email: dto.email } });
+  async join(dto: JoinWaitlistDto): Promise<WaitlistEntry> {
+    const existing = await this.waitlistRepo.findOne({
+      where: [{ email: dto.email }, { username: dto.username }],
+    });
     if (existing) {
-      throw new ConflictException('Email is already on the waitlist');
+      return existing;
     }
 
     const entry = this.waitlistRepo.create({
@@ -34,107 +31,55 @@ export class WaitlistService {
       username: dto.username,
       businessName: dto.businessName,
       country: dto.country,
-      referralCode: randomBytes(4).toString('hex').toUpperCase(),
-      unsubscribeToken: randomBytes(16).toString('hex'),
+      referralCode: this.generateReferralCode(),
+      unsubscribeToken: this.generateUnsubscribeToken(),
     });
 
-    const saved = await this.waitlistRepo.save(entry);
-
-    if (dto.referralCode) {
-      const referrer = await this.waitlistRepo.findOne({
-        where: { referralCode: dto.referralCode },
-      });
-      if (referrer && referrer.email !== dto.email) {
-        await this.waitlistRepo.increment({ id: referrer.id }, 'referrals', 1);
-      }
-    }
-
-    // Return a sanitised response – unsubscribeToken is a secret used only
-    // for one-click unsubscribe links in emails and must never be exposed in
-    // HTTP response bodies.
-    const { unsubscribeToken: _stripped, ...response } = saved as WaitlistEntry & {
-      businessName?: string;
-      country?: string;
-    };
-    return response as WaitlistEntryResponseDto;
+    return this.waitlistRepo.save(entry);
   }
 
-  /**
-   * Generate a referral code that does not already exist in the database.
-   * Retries up to REFERRAL_CODE_MAX_ATTEMPTS times on collision before failing.
-   */
-  private async generateUniqueReferralCode(): Promise<string> {
-    for (let attempt = 0; attempt < REFERRAL_CODE_MAX_ATTEMPTS; attempt++) {
-      const candidate = randomBytes(6).toString('hex').toUpperCase();
-      const collision = await this.waitlistRepo.findOne({
-        where: { referralCode: candidate },
-      });
-      if (!collision) return candidate;
-    }
-    throw new ConflictException(
-      'Unable to generate a unique referral code, please try again',
-    );
+  async findByEmail(email: string): Promise<WaitlistEntry | null> {
+    return this.waitlistRepo.findOne({ where: { email } });
   }
 
-  async checkUsername(username: string): Promise<{ available: boolean }> {
-    const existing = await this.waitlistRepo.findOne({ where: { username } });
-    return { available: !existing };
-  }
-
-  async getStats(): Promise<{ total: number }> {
-    const total = await this.waitlistRepo.count();
-    return { total };
-  }
-
-  async getPosition(email: string): Promise<{ position: number }> {
-    const entry = await this.waitlistRepo.findOne({ where: { email } });
-    if (!entry) {
-      throw new NotFoundException('Email is not on the waitlist');
-    }
-
-    // Rank by referrals DESC, then createdAt ASC (stable tie-break on id) so
-    // accumulated referrals advance a user's queue position.
-    const ahead = await this.waitlistRepo
-      .createQueryBuilder('w')
-      .where('w.referrals > :referrals', { referrals: entry.referrals })
-      .orWhere(
-        'w.referrals = :referrals AND (w.createdAt < :createdAt OR (w.createdAt = :createdAt AND w.id <= :id))',
-        { referrals: entry.referrals, createdAt: entry.createdAt, id: entry.id },
-      )
-      .getCount();
-
-    return { position: ahead };
-  }
-
-  async unsubscribe(token: string): Promise<{ message: string }> {
-    const entry = await this.waitlistRepo.findOne({ where: { unsubscribeToken: token } });
-    if (!entry) {
-      throw new UnauthorizedException('Invalid unsubscribe token');
-    }
-    await this.waitlistRepo.update(entry.id, { unsubscribed: true });
-    return { message: 'You have been unsubscribed' };
-  }
-
-  async deleteEntry(email: string, token: string): Promise<{ message: string }> {
+  async unsubscribe(token: string): Promise<void> {
     const entry = await this.waitlistRepo.findOne({
-      where: { email, unsubscribeToken: token },
+      where: { unsubscribeToken: token },
     });
     if (!entry) {
-      throw new UnauthorizedException('Invalid email or token');
+      throw new NotFoundException('Invalid unsubscribe token');
     }
-    await this.waitlistRepo.delete(entry.id);
-    return { message: 'Your data has been deleted' };
+    entry.unsubscribed = true;
+    await this.waitlistRepo.save(entry);
   }
 
-  async exportCsv(opts: ExportCsvOptions = {}): Promise<string> {
+  async getPosition(id: string): Promise<number> {
+    const entry = await this.waitlistRepo.findOne({ where: { id } });
+    if (!entry) {
+      throw new NotFoundException('Waitlist entry not found');
+    }
+    return this.waitlistRepo.count({
+      where: { createdAt: Between(new Date(0), entry.createdAt) },
+    });
+  }
+
+  async exportCsv(options: ExportCsvOptions = {}): Promise<string> {
     const where: FindOptionsWhere<WaitlistEntry> = {};
 
-    if (opts.dateFrom && opts.dateTo) {
-      where.createdAt = Between(new Date(opts.dateFrom), new Date(opts.dateTo));
-    } else if (opts.dateFrom) {
-      where.createdAt = MoreThanOrEqual(new Date(opts.dateFrom));
-    } else if (opts.dateTo) {
-      where.createdAt = LessThanOrEqual(new Date(opts.dateTo));
+    if (options.dateFrom && options.dateTo) {
+      where.createdAt = Between(new Date(options.dateFrom), new Date(options.dateTo));
+    } else if (options.dateFrom) {
+      where.createdAt = Between(new Date(options.dateFrom), new Date());
+    } else if (options.dateTo) {
+      where.createdAt = Between(new Date(0), new Date(options.dateTo));
+    }
+
+    if (options.country) {
+      where.country = options.country;
+    }
+
+    if (!options.includeUnsubscribed) {
+      where.unsubscribed = false;
     }
 
     const entries = await this.waitlistRepo.find({
@@ -144,11 +89,24 @@ export class WaitlistService {
 
     const header = 'email,username,businessName,country,referrals,createdAt';
     const rows = entries.map((e) =>
-      [e.email, e.username, e.businessName, e.country, e.referrals, e.createdAt.toISOString()]
-        .map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`)
-        .join(','),
+      [
+        e.email,
+        e.username,
+        e.businessName ?? '',
+        e.country ?? '',
+        e.referrals,
+        e.createdAt.toISOString(),
+      ].join(','),
     );
 
     return [header, ...rows].join('\n');
+  }
+
+  private generateReferralCode(): string {
+    return Math.random().toString(36).substring(2, 10).toUpperCase();
+  }
+
+  private generateUnsubscribeToken(): string {
+    return Math.random().toString(36).substring(2) + Date.now().toString(36);
   }
 }
