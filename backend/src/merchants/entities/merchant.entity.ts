@@ -20,8 +20,17 @@ export class Merchant {
   @Column({ unique: true })
   email: string;
 
-  @Column()
-  name: string;
+  @Column({ nullable: true })
+  name?: string;
+
+  @Column({ nullable: true })
+  businessName?: string;
+
+  @Column({ nullable: true })
+  businessType?: string;
+
+  @Column({ nullable: true })
+  country?: string;
 
   @Column({ nullable: true })
   passwordHash?: string;
