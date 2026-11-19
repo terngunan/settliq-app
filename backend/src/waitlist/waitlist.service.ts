@@ -58,9 +58,10 @@ export class WaitlistService {
     if (!entry) {
       throw new NotFoundException('Waitlist entry not found');
     }
-    return this.waitlistRepo.count({
+    const ahead = await this.waitlistRepo.count({
       where: { createdAt: Between(new Date(0), entry.createdAt) },
     });
+    return ahead + 1;
   }
 
   async exportCsv(options: ExportCsvOptions = {}): Promise<string> {
