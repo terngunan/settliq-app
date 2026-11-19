@@ -16,6 +16,17 @@ use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Bytes, Env
 const THRESHOLD: u32 = 2;
 const EXPIRY_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 
+/// TTL extension parameters for persistent `DataKey::Proposal` entries.
+///
+/// Persistent entries are archived once their TTL lapses. Active governance
+/// proposals awaiting threshold signatures must survive well beyond the
+/// default ledger retention window, so we extend their TTL on creation and on
+/// every approval/signature. `PROPOSAL_TTL_THRESHOLD` is the remaining-TTL
+/// watermark below which an extension is triggered; `PROPOSAL_TTL_EXTEND_TO`
+/// is the target TTL (in ledgers) applied when extending.
+const PROPOSAL_TTL_THRESHOLD: u32 = 100_000;
+const PROPOSAL_TTL_EXTEND_TO: u32 = 500_000;
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proposal {
@@ -152,9 +163,15 @@ impl MultisigAdminContract {
         // required THRESHOLD >= 2 it cannot auto-execute here. See the
         // THRESHOLD invariant above.
         Self::maybe_execute(&env, &mut proposal);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Proposal(proposal_id), &proposal);
+        let key = DataKey::Proposal(proposal_id);
+        env.storage().persistent().set(&key, &proposal);
+        // Extend the persistent TTL so the freshly created proposal survives
+        // beyond the default ledger retention window while awaiting signatures.
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_TTL_THRESHOLD,
+            PROPOSAL_TTL_EXTEND_TO,
+        );
         proposal_id
     }
 
@@ -199,6 +216,13 @@ impl MultisigAdminContract {
         // requires at least one distinct approver beyond the proposer.
         Self::maybe_execute(&env, &mut proposal);
         env.storage().persistent().set(&key, &proposal);
+        // Keep the proposal alive on each signature so it does not get
+        // archived mid-governance while still awaiting further approvals.
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_TTL_THRESHOLD,
+            PROPOSAL_TTL_EXTEND_TO,
+        );
     }
 
     /// Reject a proposal to prevent it from being executed. Admin only. (#91)
@@ -236,7 +260,6 @@ impl MultisigAdminContract {
     ///
     /// Permissionless: expiry is objectively checkable on-chain via
     /// `env.ledger().timestamp() > proposal.expires_at`, matching the check
-    /// used by `approve`/`maybe_execute`. This lets anyone reclaim the rent
-    /// and 
+    /// used by `approve`/
 
-/* … truncated 5079 chars — edit only what you need near the top … */
+/* … truncated 135 chars — edit only what you need near the top … */
