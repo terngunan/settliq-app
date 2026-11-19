@@ -212,6 +212,16 @@ impl LiquidityRouter {
             panic!("only admin can transfer admin");
         }
 
+        // Issue #225: Reject transferring admin to the contract itself, which
+        // would permanently lock admin capabilities since the contract cannot
+        // produce external signatures for require_auth().
+        assert!(
+            new_admin != env.current_contract_address(),
+            "cannot transfer admin to contract"
+        );
+        // Issue #225: Reject no-op re-assignment to the current admin.
+        assert!(new_admin != current_admin, "new admin must be different");
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
         // Issue #224: Emit audit event for the ownership change
@@ -238,17 +248,45 @@ impl LiquidityRouter {
     pub fn check_and_route(env: Env, pool_address: Address, amount_in: i128) -> Route {
         // Issue #46: Reject zero and negative input amounts immediately.
         if amount_in <= 0 {
-            panic!("amount_in must be > 0");
+            panic!("amount must be positive");
         }
 
-        // Issue #1025: Validate pool_address against allowlist before calling get_reserves
+        // Issue #1025: Only allow routing through allowlisted pools
         let pools: Vec<Address> = env.storage().instance().get(&DataKey::ApprovedPools)
             .unwrap_or_else(|| Vec::new(&env));
-
         if !pools.iter().any(|p| p == pool_address) {
-            panic!("pool is not approved");
+            panic!("pool not allowlisted");
         }
 
-        // Issue #1086: Query AMM reserves via cross-contract call using t
+        let client = AmmClient::new(&env, &pool_address);
+        let (reserve_a, reserve_b) = client.get_reserves();
 
-/* … truncated 2993 chars — edit only what you need near the top … */
+        // Issue #1085: Use the admin-configurable depth threshold
+        let threshold_bps = Self::get_depth_threshold_bps(env.clone());
+
+        // Compute price impact in basis points: amount_in / reserve * 10_000
+        let reserve = if reserve_a < reserve_b { reserve_a } else { reserve_b };
+        if reserve <= 0 {
+            panic!("invalid reserves");
+        }
+
+        let impact_bps = amount_in
+            .checked_mul(10_000)
+            .expect("overflow")
+            / reserve;
+
+        if impact_bps <= threshold_bps as i128 {
+            Route::SorobanAMM
+        } else {
+            env.events().publish(
+                (Symbol::new(&env, "FallbackRouteUsed"),),
+                FallbackRouteUsed {
+                    pool_id: pool_address,
+                    amount: amount_in,
+                    reserve,
+                },
+            );
+            Route::StellarClassicDEX
+        }
+    }
+}
