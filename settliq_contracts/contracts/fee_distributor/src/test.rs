@@ -32,13 +32,15 @@ fn setup(lp_share_bps: i128) -> Setup<'static> {
     let token_admin = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
     let sac = StellarAssetClient::new(&env, &token_id.address());
-    // Mint 1_000_000 to caller so distribute() can pull from them.
-    sac.mint(&caller, &1_000_000);
 
     let contract_id = env.register(
         FeeDistributorContract,
         (&admin, &treasury, &lp, lp_share_bps, &token_id.address(), &caller),
     );
+
+    // Mint 1_000_000 to the distributor contract so distribute() can transfer
+    // from the contract's own balance (issue #221).
+    sac.mint(&contract_id, &1_000_000);
 
     let client = FeeDistributorContractClient::new(&env, &contract_id);
     let token = TokenClient::new(&env, &token_id.address());
@@ -127,8 +129,9 @@ fn test_distribute_xlm_fees() {
     let xlm_admin = Address::generate(&s.env);
     let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
     let xlm_sac = StellarAssetClient::new(&s.env, &xlm_id.address());
-    // Mint XLM to the caller so distribute() can pull from them.
-    xlm_sac.mint(&s.caller, &1_000_000);
+    // Mint XLM to the distributor contract so distribute() can transfer from
+    // the contract's own balance (issue #221).
+    xlm_sac.mint(&s.client.address, &1_000_000);
 
     let xlm_token = TokenClient::new(&s.env, &xlm_id.address());
 
@@ -158,7 +161,7 @@ fn test_distribute_both_usdc_and_xlm() {
     let xlm_admin = Address::generate(&s.env);
     let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
     let xlm_sac = StellarAssetClient::new(&s.env, &xlm_id.address());
-    xlm_sac.mint(&s.caller, &1_000_000);
+    xlm_sac.mint(&s.client.address, &1_000_000);
 
     let xlm_token = TokenClient::new(&s.env, &xlm_id.address());
 
@@ -191,7 +194,7 @@ fn test_distribute_rejects_unapproved_token() {
     let unknown_admin = Address::generate(&s.env);
     let unknown_id = s.env.register_stellar_asset_contract_v2(unknown_admin.clone());
     let unknown_sac = StellarAssetClient::new(&s.env, &unknown_id.address());
-    unknown_sac.mint(&s.caller, &10_000);
+    unknown_sac.mint(&s.client.address, &10_000);
 
     // Attempt to distribute without adding to the allowlist — should panic.
     s.client.distribute(&s.caller, &unknown_id.address(), &10_000);
@@ -207,7 +210,7 @@ fn test_distribute_rejects_removed_token() {
     let xlm_admin = Address::generate(&s.env);
     let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
     let xlm_sac = StellarAssetClient::new(&s.env, &xlm_id.address());
-    xlm_sac.mint(&s.caller, &10_000);
+    xlm_sac.mint(&s.client.address, &10_000);
 
     // Add then remove.
     s.client.add_allowed_token(&s.admin, &xlm_id.address());
@@ -238,18 +241,27 @@ fn test_get_allowed_tokens_reflects_additions() {
 
     let tokens = s.client.get_allowed_tokens();
     assert_eq!(tokens.len(), 2);
-    assert!(tokens.contains(&xlm_id.address()));
+    assert_eq!(tokens.get(0).unwrap(), s.token_address);
+    assert_eq!(tokens.get(1).unwrap(), xlm_id.address());
 }
 
-/// `fee_distributed` event includes the token address used for the transfer.
+// ─── Contract-balance distribution (issue #221) ──────────────────────────────
+
+/// `distribute` must transfer from the distributor contract's own balance
+/// (`env.current_contract_address()`), not from the caller. The caller holds no
+/// tokens here; only the contract was funded in `setup`.
 #[test]
-fn test_distribute_event_includes_token_address() {
+fn test_distribute_from_contract_balance() {
     let s = setup(5_000);
+
+    // Caller holds nothing — distribution must still succeed from the
+    // contract's balance.
+    assert_eq!(s.token.balance(&s.caller), 0);
+    assert_eq!(s.token.balance(&s.client.address), 1_000_000);
+
     s.client.distribute(&s.caller, &s.token_address, &10_000);
-    let events = s.env.events().all();
-    let last = events.last().unwrap();
-    let event: crate::FeeDistributedEvent = last.2.into_val(&s.env);
-    assert_eq!(event.token, s.token_address);
-    assert_eq!(event.treasury_amount, 5_000);
-    assert_eq!(event.lp_amount, 5_000);
+
+    assert_eq!(s.token.balance(&s.treasury), 5_000);
+    assert_eq!(s.token.balance(&s.lp), 5_000);
+    assert_eq!(s.token.balance(&s.client.address), 990_000);
 }

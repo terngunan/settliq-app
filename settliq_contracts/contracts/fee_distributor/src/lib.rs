@@ -73,12 +73,15 @@ impl FeeDistributorContract {
         let lp_amount = amount * lp_share_bps / 10_000;
         let treasury_amount = amount - lp_amount;
 
+        // Fees are held by the distributor contract, so transfers must originate
+        // from the contract address rather than the caller.
+        let contract_address = env.current_contract_address();
         let token_client = token::Client::new(&env, &token);
         if lp_amount > 0 {
-            token_client.transfer(&caller, &lp_address, &lp_amount);
+            token_client.transfer(&contract_address, &lp_address, &lp_amount);
         }
         if treasury_amount > 0 {
-            token_client.transfer(&caller, &treasury, &treasury_amount);
+            token_client.transfer(&contract_address, &treasury, &treasury_amount);
         }
 
         env.events().publish(
