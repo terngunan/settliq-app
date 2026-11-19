@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { WaitlistService } from './waitlist.service';
 import { WaitlistEntry } from './entities/waitlist.entity';
 
@@ -24,6 +24,38 @@ describe('WaitlistService', () => {
     }).compile();
 
     service = module.get<WaitlistService>(WaitlistService);
+  });
+
+  describe('join', () => {
+    it('throws ConflictException when email is already on the waitlist', async () => {
+      repo.findOne.mockResolvedValue({ id: 'a', email: 'a@example.com' });
+      await expect(
+        service.join({ email: 'a@example.com', username: 'alice' } as any),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('throws ConflictException when username is already taken', async () => {
+      repo.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'b', email: 'b@example.com', username: 'alice' });
+
+      await expect(
+        service.join({ email: 'new@example.com', username: 'alice' } as any),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it('maps a unique constraint violation on save to ConflictException', async () => {
+      repo.findOne.mockResolvedValue(null);
+      const dbError: any = new Error('duplicate key value violates unique constraint');
+      dbError.code = '23505';
+      dbError.detail = 'Key (username)=(alice) already exists.';
+      repo.save.mockRejectedValue(dbError);
+
+      await expect(
+        service.join({ email: 'new@example.com', username: 'alice' } as any),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
   });
 
   describe('getPosition', () => {

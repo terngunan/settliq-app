@@ -29,6 +29,13 @@ export class WaitlistService {
       throw new ConflictException('Email is already on the waitlist');
     }
 
+    const usernameTaken = await this.waitlistRepo.findOne({
+      where: { username: dto.username },
+    });
+    if (usernameTaken) {
+      throw new ConflictException('Username is already taken');
+    }
+
     const entry = this.waitlistRepo.create({
       email: dto.email,
       username: dto.username,
@@ -38,7 +45,18 @@ export class WaitlistService {
       unsubscribeToken: randomBytes(16).toString('hex'),
     });
 
-    const saved = await this.waitlistRepo.save(entry);
+    let saved: WaitlistEntry;
+    try {
+      saved = await this.waitlistRepo.save(entry);
+    } catch (error) {
+      // Fallback for race conditions where a concurrent request inserts the
+      // same username between the check above and save(). Map the Postgres
+      // unique violation (23505) to a 409 instead of leaking a 500.
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('Username is already taken');
+      }
+      throw error;
+    }
 
     if (dto.referralCode) {
       const referrer = await this.waitlistRepo.findOne({
@@ -57,6 +75,18 @@ export class WaitlistService {
       country?: string;
     };
     return response as WaitlistEntryResponseDto;
+  }
+
+  /**
+   * Detect a Postgres unique constraint violation (SQLSTATE 23505) surfaced
+   * by TypeORM as a QueryFailedError.
+   */
+  private isUniqueViolation(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const code = (error as { code?: string }).code;
+    if (code === '23505') return true;
+    const driverError = (error as { driverError?: { code?: string } }).driverError;
+    return driverError?.code === '23505';
   }
 
   /**
