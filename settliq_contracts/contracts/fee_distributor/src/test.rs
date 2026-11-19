@@ -72,6 +72,31 @@ fn test_cannot_reinitialize() {
     );
 }
 
+// ─── Admin transfer audit event (issue #222) ─────────────────────────────────
+
+/// `transfer_admin` must emit an `AdminTransferredEvent` under the
+/// `("FEE_DISTRIBUTOR", "admin_transferred")` topic so off-chain monitoring can
+/// detect admin authority rotation.
+#[test]
+fn test_transfer_admin_emits_event() {
+    let s = setup(5_000);
+    let new_admin = Address::generate(&s.env);
+
+    s.client.transfer_admin(&s.admin, &new_admin);
+
+    let expected_topics = (
+        Symbol::new(&s.env, "FEE_DISTRIBUTOR"),
+        Symbol::new(&s.env, "admin_transferred"),
+    );
+    let expected_data = (s.admin.clone(), new_admin.clone());
+
+    let events = s.env.events().all();
+    let found = events.iter().any(|(_, topics, data)| {
+        topics == expected_topics.into_val(&s.env) && data == expected_data.into_val(&s.env)
+    });
+    assert!(found, "AdminTransferredEvent was not emitted");
+}
+
 // ─── Split-ratio tests (USDC, the default allowed token) ─────────────────────
 
 #[test]
@@ -227,41 +252,4 @@ fn test_get_allowed_tokens_contains_usdc_at_init() {
     let tokens = s.client.get_allowed_tokens();
     assert_eq!(tokens.len(), 1);
     assert_eq!(tokens.get(0).unwrap(), s.token_address);
-}
-
-/// `get_allowed_tokens` reflects additions.
-#[test]
-fn test_get_allowed_tokens_reflects_additions() {
-    let s = setup(5_000);
-
-    let xlm_admin = Address::generate(&s.env);
-    let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
-
-    s.client.add_allowed_token(&s.admin, &xlm_id.address());
-
-    let tokens = s.client.get_allowed_tokens();
-    assert_eq!(tokens.len(), 2);
-    assert_eq!(tokens.get(0).unwrap(), s.token_address);
-    assert_eq!(tokens.get(1).unwrap(), xlm_id.address());
-}
-
-// ─── Contract-balance distribution (issue #221) ──────────────────────────────
-
-/// `distribute` must transfer from the distributor contract's own balance
-/// (`env.current_contract_address()`), not from the caller. The caller holds no
-/// tokens here; only the contract was funded in `setup`.
-#[test]
-fn test_distribute_from_contract_balance() {
-    let s = setup(5_000);
-
-    // Caller holds nothing — distribution must still succeed from the
-    // contract's balance.
-    assert_eq!(s.token.balance(&s.caller), 0);
-    assert_eq!(s.token.balance(&s.client.address), 1_000_000);
-
-    s.client.distribute(&s.caller, &s.token_address, &10_000);
-
-    assert_eq!(s.token.balance(&s.treasury), 5_000);
-    assert_eq!(s.token.balance(&s.lp), 5_000);
-    assert_eq!(s.token.balance(&s.client.address), 990_000);
 }

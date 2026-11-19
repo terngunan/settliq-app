@@ -22,6 +22,13 @@ pub struct FeeDistributedEvent {
     pub lp_amount: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferredEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
 #[contract]
 pub struct FeeDistributorContract;
 
@@ -87,6 +94,20 @@ impl FeeDistributorContract {
         env.events().publish(
             (soroban_sdk::symbol_short!("fee_dist"),),
             FeeDistributedEvent { token, treasury_amount, lp_amount },
+        );
+    }
+
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        assert!(caller == old_admin, "unauthorized");
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("FEE_DISTRIBUTOR"),
+                soroban_sdk::symbol_short!("admin_transferred"),
+            ),
+            AdminTransferredEvent { old_admin, new_admin },
         );
     }
 
