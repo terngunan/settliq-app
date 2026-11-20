@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -86,10 +87,16 @@ export class WaitlistService {
     return { total };
   }
 
-  async getPosition(email: string): Promise<{ position: number }> {
+  async getPosition(email: string, token: string): Promise<{ position: number }> {
+    if (!email || !token) {
+      throw new BadRequestException('Both email and token are required');
+    }
+
     const entry = await this.waitlistRepo.findOne({ where: { email } });
-    if (!entry) {
-      throw new NotFoundException('Email is not on the waitlist');
+    // Return a generic 401 for both missing entries and token mismatches so
+    // unauthenticated callers cannot enumerate waitlist membership.
+    if (!entry || entry.unsubscribeToken !== token) {
+      throw new UnauthorizedException('Invalid email or token');
     }
 
     // Rank by referrals DESC, then createdAt ASC (stable tie-break on id) so
