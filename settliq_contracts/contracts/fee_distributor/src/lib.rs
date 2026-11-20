@@ -45,7 +45,7 @@ pub struct FeeDistributorContract;
 
 #[contractimpl]
 impl FeeDistributorContract {
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         admin: Address,
         treasury: Address,
