@@ -276,139 +276,89 @@
 
     // ─── Component display config ──────────────────────────────────────────────
     const COMPONENT_META = {
-      database:   { label: 'Database',          description: 'PostgreSQL — primary data store' },
-      stellar:    { label: 'Stellar / Horizon',  description: 'Blockchain settlement layer' },
-      partnerApi: { label: 'Partner API',        description: 'Fiat settlement provider' },
-      redis:      { label: 'Redis / Queue',      description: 'Job queue & caching layer' },
-      queue:      { label: 'Background Jobs',    description: 'Settlement & webhook processors' },
+      database:   { label: 'Database',         description: 'Primary PostgreSQL cluster' },
+      redis:      { label: 'Cache',            description: 'Redis cache layer' },
+      api:        { label: 'API',              description: 'REST API gateway' },
+      worker:     { label: 'Background Jobs',  description: 'Async job processing' },
+      storage:    { label: 'Object Storage',   description: 'File & asset storage' },
     };
 
-    // ─── State ─────────────────────────────────────────────────────────────────
-    let lastStatus = null;
-
-    // ─── Helpers ───────────────────────────────────────────────────────────────
+    // ─── Status helpers ────────────────────────────────────────────────────────
     function statusLabel(s) {
-      return { ok: 'Operational', degraded: 'Degraded', down: 'Outage' }[s] ?? 'Unknown';
+      return { ok: 'Operational', healthy: 'Operational', degraded: 'Degraded', down: 'Outage' }[s] ?? 'Unknown';
     }
-
     function statusClass(s) {
-      return { ok: 'ok', degraded: 'degraded', down: 'down' }[s] ?? 'unknown';
+      return { ok: 'ok', healthy: 'ok', degraded: 'degraded', down: 'down' }[s] ?? 'unknown';
     }
 
-    function overallLabel(s) {
-      return {
-        healthy:  'All Systems Operational',
-        degraded: 'Partial Outage',
-        down:     'Major Outage',
-      }[s] ?? 'Checking…';
-    }
+    // ─── Rendering ─────────────────────────────────────────────────────────────
+    function renderComponents(components) {
+      const card = document.getElementById('components-card');
+      const entries = Object.entries(components || {});
 
-    function formatTime(iso) {
-      try {
-        return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      } catch { return iso; }
-    }
-
-    // ─── Render ────────────────────────────────────────────────────────────────
-    function render(data) {
-      // Overall badge
-      const badge = document.getElementById('overall-badge');
-      const text  = document.getElementById('overall-text');
-      badge.className = `overall-badge ${data.status}`;
-      text.textContent = overallLabel(data.status);
-
-      // Incident banner
-      const banner = document.getElementById('incident-banner');
-      const incidentText = document.getElementById('incident-text');
-      if (data.status === 'down' || data.status === 'degraded') {
-        const downComponents = Object.entries(data.components || {})
-          .filter(([, v]) => v.status !== 'ok')
-          .map(([k]) => COMPONENT_META[k]?.label ?? k)
-          .join(', ');
-        incidentText.textContent = `Affected components: ${downComponents}. Our team has been alerted and is investigating.`;
-        banner.classList.add('visible');
-      } else {
-        banner.classList.remove('visible');
+      if (entries.length === 0) {
+        card.innerHTML = '<div class="component-row"><span class="component-name">No components reported</span></div>';
+        return;
       }
 
-      // Component rows
-      const card = document.getElementById('components-card');
-      const components = data.components || {};
-      const order = ['database', 'stellar', 'partnerApi', 'redis', 'queue'];
-
-      card.innerHTML = order.map(key => {
-        const comp = components[key];
-        if (!comp) return '';
+      card.innerHTML = entries.map(([key, comp]) => {
         const meta = COMPONENT_META[key] || { label: key, description: '' };
-        const sc   = statusClass(comp.status);
-        const latencyText = comp.latency != null ? `${comp.latency}ms` : '';
-
+        const cls = statusClass(comp.status);
+        const label = statusLabel(comp.status);
+        const latency = comp.latencyMs != null ? `${comp.latencyMs}ms` : '';
         return `
           <div class="component-row">
             <div>
               <div class="component-name">${meta.label}</div>
-              <div class="component-meta">${meta.description}${latencyText ? ` · ${latencyText}` : ''}</div>
+              ${meta.description ? `<div class="component-meta">${meta.description}</div>` : ''}
             </div>
-            <div class="component-status status-${sc}">
-              <div class="status-indicator ${sc}"></div>
-              ${statusLabel(comp.status)}
+            <div class="component-status status-${cls}">
+              <span class="status-indicator ${cls}"></span>
+              <span>${label}${latency ? ` · ${latency}` : ''}</span>
             </div>
-          </div>
-        `;
+          </div>`;
       }).join('');
-
-      // Last updated
-      document.getElementById('last-updated').textContent =
-        `Last checked: ${formatTime(data.timestamp || new Date().toISOString())}`;
     }
 
-    function renderError() {
+    function renderOverall(overall) {
       const badge = document.getElementById('overall-badge');
-      const text  = document.getElementById('overall-text');
-      badge.className = 'overall-badge down';
-      text.textContent = 'Status Unavailable';
-
-      const card = document.getElementById('components-card');
-      card.innerHTML = `
-        <div class="component-row">
-          <div class="component-name" style="color:var(--muted)">
-            Unable to reach the status API. This may indicate a network issue or a major outage.
-          </div>
-        </div>
-      `;
-
-      document.getElementById('last-updated').textContent =
-        `Last attempted: ${new Date().toLocaleTimeString()}`;
+      const text = document.getElementById('overall-text');
+      const cls = statusClass(overall);
+      badge.className = `overall-badge ${cls === 'ok' ? 'healthy' : cls}`;
+      text.textContent = statusLabel(overall);
     }
 
-    // ─── Fetch ─────────────────────────────────────────────────────────────────
-    async function fetchStatus() {
-      try {
-        const res = await fetch(`${API_BASE}/health/admin`, {
-          headers: { 'Accept': 'application/json' },
-          // 10-second timeout
-          signal: AbortSignal.timeout(10_000),
-        });
-
-        // /health/admin returns 503 when critical components are down,
-        // but still returns a valid JSON body — parse it regardless.
-        const data = await res.json();
-        lastStatus = data;
-        render(data);
-      } catch (err) {
-        console.error('[status-page] fetch failed:', err);
-        // If we have a cached status, keep showing it with a stale indicator
-        if (lastStatus) {
-          render(lastStatus);
-          document.getElementById('last-updated').textContent +=
-            ' (stale — refresh failed)';
-        } else {
-          renderError();
-        }
+    function renderIncident(incident) {
+      const banner = document.getElementById('incident-banner');
+      const text = document.getElementById('incident-text');
+      if (incident && incident.message) {
+        text.textContent = incident.message;
+        banner.classList.add('visible');
+      } else {
+        banner.classList.remove('visible');
       }
     }
 
-    // ─── Boot ──────────────────────────────────────────────────────────────────
+    // ─── Data fetching ─────────────────────────────────────────────────────────
+    async function fetchStatus() {
+      try {
+        const res = await fetch(`${API_BASE}/health/admin`, { headers: { Accept: 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        renderComponents(data.components);
+        renderOverall(data.status || data.overall);
+        renderIncident(data.incident);
+
+        document.getElementById('last-updated').textContent =
+          `Last checked: ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        renderOverall('down');
+        document.getElementById('last-updated').textContent =
+          `Last checked: ${new Date().toLocaleTimeString()} (error)`;
+      }
+    }
+
     fetchStatus();
     setInterval(fetchStatus, POLL_INTERVAL_MS);
   </script>
