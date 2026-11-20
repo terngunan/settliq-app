@@ -4,6 +4,8 @@ import { Repository, Between, FindOptionsWhere } from 'typeorm';
 import { WaitlistEntry } from './entities/waitlist.entity';
 import { JoinWaitlistDto } from './dto/join-waitlist.dto';
 
+const REFERRAL_CODE_MAX_ATTEMPTS: number = 5;
+
 export interface ExportCsvOptions {
   dateFrom?: string;
   dateTo?: string;
@@ -26,13 +28,15 @@ export class WaitlistService {
       return existing;
     }
 
+    const referralCode = await this.generateUniqueReferralCode();
+
     const entry = this.waitlistRepo.create({
       email: dto.email,
       username: dto.username,
       businessName: dto.businessName,
       country: dto.country,
-      referralCode: this.generateReferralCode(),
-      unsubscribeToken: this.generateUnsubscribeToken(),
+      referralCode,
+      unsubscribeToken: randomBytes(16).toString('hex'),
     });
 
     return this.waitlistRepo.save(entry);

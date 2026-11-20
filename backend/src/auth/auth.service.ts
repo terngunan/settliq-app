@@ -52,9 +52,7 @@ export class AuthService {
     const merchant = this.merchantsRepo.create({
       email: dto.email,
       passwordHash,
-      businessName: dto.businessName,
-      businessType: dto.businessType,
-      country: dto.country,
+      name: dto.name,
       status: MerchantStatus.PENDING,
     });
 
@@ -217,6 +215,6 @@ export class AuthService {
 
     const merchant = await this.merchantsRepo.findOne({
       where: { apiKeyLookupHash: lookupHash },
-      wit
+      wi
 
-/* … truncated 2599 chars — edit only what you need near the top … */
+/* … truncated 73 chars — edit only what you need near the top … */
