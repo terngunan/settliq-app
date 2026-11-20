@@ -31,21 +31,6 @@
             ]
           }
         }
-      },
-      "alert": {
-        "name": "Low Settlement Success Rate",
-        "conditions": [
-          {
-            "evaluator": { "type": "lt", "params": [90] },
-            "query": { "params": ["A", "5m", "now"] },
-            "reducer": { "type": "avg" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "frequency": "1m",
-        "handler": 1,
-        "message": "Settlement success rate dropped below 90%"
       }
     },
     {

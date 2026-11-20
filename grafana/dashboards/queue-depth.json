@@ -20,21 +20,6 @@
       ],
       "fieldConfig": {
         "defaults": { "unit": "short", "color": { "mode": "palette-classic" } }
-      },
-      "alert": {
-        "name": "Queue Depth Too High",
-        "conditions": [
-          {
-            "evaluator": { "type": "gt", "params": [1000] },
-            "query": { "params": ["A", "5m", "now"] },
-            "reducer": { "type": "max" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "frequency": "1m",
-        "handler": 1,
-        "message": "Queue depth exceeded 1000 messages"
       }
     },
     {

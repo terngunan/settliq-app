@@ -20,21 +20,6 @@
       ],
       "fieldConfig": {
         "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } }
-      },
-      "alert": {
-        "name": "Low Payment Volume",
-        "conditions": [
-          {
-            "evaluator": { "type": "lt", "params": [1] },
-            "query": { "params": ["A", "5m", "now"] },
-            "reducer": { "type": "avg" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "frequency": "1m",
-        "handler": 1,
-        "message": "Payment volume has dropped below threshold"
       }
     },
     {
