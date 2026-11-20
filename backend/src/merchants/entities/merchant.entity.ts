@@ -21,11 +21,6 @@ export enum MerchantStatus {
   SUSPENDED = 'suspended',
 }
 
-export enum MerchantRole {
-  MERCHANT = 'merchant',
-  ADMIN = 'admin',
-}
-
 @Entity('merchants')
 export class Merchant {
   @PrimaryGeneratedColumn('uuid')
