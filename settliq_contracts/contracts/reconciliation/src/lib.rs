@@ -8,6 +8,14 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
+/// Minimum remaining TTL (in ledgers) before a persistent batch entry is
+/// extended. Roughly one day at 5s per ledger.
+const BATCH_TTL_THRESHOLD: u32 = 17_280;
+/// TTL (in ledgers) that persistent batch entries are extended to on write and
+/// read. Roughly 30 days at 5s per ledger, keeping historical Merkle roots
+/// available for proof verification.
+const BATCH_TTL_EXTEND_TO: u32 = 518_400;
+
 /// A single sibling node on the path from a leaf to the Merkle root.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,7 +129,11 @@ impl ReconciliationContract {
             submitted_at: env.ledger().timestamp(),
         };
 
-        env.storage().persistent().set(&DataKey::Batch(batch_id), &record);
+        let key = DataKey::Batch(batch_id);
+        env.storage().persistent().set(&key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BATCH_TTL_THRESHOLD, BATCH_TTL_EXTEND_TO);
         env.storage().instance().set(&DataKey::CurrentBatch, &batch_id);
         env.storage().instance().set(&DataKey::BatchCount, &(batch_id + 1));
 
@@ -140,11 +152,11 @@ impl ReconciliationContract {
 
     pub fn get_current_batch(env: Env) -> Option<BatchRecord> {
         let id: u32 = env.storage().instance().get(&DataKey::CurrentBatch)?;
-        env.storage().persistent().get(&DataKey::Batch(id))
+        Self::load_batch(&env, id)
     }
 
     pub fn get_batch(env: Env, batch_id: u32) -> Option<BatchRecord> {
-        env.storage().persistent().get(&DataKey::Batch(batch_id))
+        Self::load_batch(&env, batch_id)
     }
 
     pub fn batch_count(env: Env) -> u32 {
@@ -204,6 +216,19 @@ impl ReconciliationContract {
         );
     }
 
+    /// Loads a batch from persistent storage, extending its TTL so historical
+    /// Merkle roots remain available for proof verification.
+    fn load_batch(env: &Env, batch_id: u32) -> Option<BatchRecord> {
+        let key = DataKey::Batch(batch_id);
+        let record: Option<BatchRecord> = env.storage().persistent().get(&key);
+        if record.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BATCH_TTL_THRESHOLD, BATCH_TTL_EXTEND_TO);
+        }
+        record
+    }
+
     fn verify_against_root(
         env: &Env,
         root: &BytesN<32>,
@@ -241,54 +266,6 @@ mod test {
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{BytesN, Env, Vec};
 
-    fn setup() -> (Env, ReconciliationContractClient<'static>, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let contract_id = env.register(ReconciliationContract, (&admin,));
-        let client = ReconciliationContractClient::new(&env, &contract_id);
-        (env, client, admin)
-    }
+    fn setup() -> (Env, Rec
 
-    #[test]
-    fn test_verify_settlement_no_batch_returns_false() {
-        let (env, client, _admin) = setup();
-        let payment_id = BytesN::from_array(&env, &[7u8; 32]);
-        let proof: Vec<MerkleProofNode> = Vec::new(&env);
-        assert!(!client.verify_settlement(&payment_id, &proof));
-    }
-
-    #[test]
-    fn test_verify_settlement_valid_proof_returns_true() {
-        let (env, client, admin) = setup();
-        let payment_id = BytesN::from_array(&env, &[1u8; 32]);
-        let sibling = BytesN::from_array(&env, &[2u8; 32]);
-
-        let leaf = ReconciliationContract::hash_leaf(&env, &payment_id);
-        let root = ReconciliationContract::hash_pair(&env, &leaf, &sibling);
-        client.submit_merkle_root(&admin, &root);
-
-        let mut proof: Vec<MerkleProofNode> = Vec::new(&env);
-        proof.push_back(MerkleProofNode { sibling, is_left: false });
-
-        assert!(client.verify_settlement(&payment_id, &proof));
-    }
-
-    #[test]
-    fn test_verify_settlement_invalid_proof_returns_false() {
-        let (env, client, admin) = setup();
-        let payment_id = BytesN::from_array(&env, &[1u8; 32]);
-        let sibling = BytesN::from_array(&env, &[2u8; 32]);
-
-        let leaf = ReconciliationContract::hash_leaf(&env, &payment_id);
-        let root = ReconciliationContract::hash_pair(&env, &leaf, &sibling);
-        client.submit_merkle_root(&admin, &root);
-
-        // Wrong sibling produces a mismatched root.
-        let wrong_sibling = BytesN::from_array(&env, &[9u8; 32]);
-        let mut proof: Vec<MerkleProofNode> = Vec::new(&env);
-        proof.push_back(MerkleProofNode { sibling: wrong_sibling, is_left: false });
-
-        assert!(!client.verify_settlement(&payment_id, &proof));
-    }
-}
+/* … truncated 2077 chars — edit only what you need near the top … */
