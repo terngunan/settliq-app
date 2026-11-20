@@ -84,17 +84,16 @@ fn require_admin(env: &Env, caller: &Address) {
 
 #[contractimpl]
 impl PaymentRequestContract {
-    /// Initialize the contract with an admin address.
+    /// Atomic constructor: runs once during contract deployment.
     ///
-    /// Must be called once before any other function. The admin is authorized to
-    /// drive settlement state transitions (`confirm`, `set_settling`, `settle`,
-    /// `fail`) without requiring the merchant's signature each time, enabling
-    /// backend settlement daemons to operate autonomously.
-    pub fn initialize(env: Env, admin: Address) {
+    /// Sets the admin address that is authorized to drive settlement state
+    /// transitions (`confirm`, `set_settling`, `settle`, `fail`) without
+    /// requiring the merchant's signature each time, enabling backend
+    /// settlement daemons to operate autonomously. Because this executes as
+    /// part of the deployment transaction, there is no window for a
+    /// front-runner to initialize the contract with their own admin.
+    pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
-        }
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
@@ -251,42 +250,4 @@ impl PaymentRequestContract {
 
     /// Mark payment as expired.
     ///
-    /// Permissionless: anyone may call this once the expiry timestamp has
-    /// passed. The merchant's signature is NOT required, so abandoned payments
-    /// can always be cleaned up by the backend or any third party.
-    pub fn expire(env: Env, id: String) {
-        let key = DataKey::Payment(id.clone());
-        let mut payment = load_payment(&env, &key);
-
-        if payment.status != PaymentStatus::Pending && payment.status != PaymentStatus::Confirmed {
-            panic!("Cannot expire a finalized or settling payment");
-        }
-
-        if env.ledger().timestamp() <= payment.expiry {
-            panic!("Payment has not yet reached expiry time");
-        }
-
-        payment.status = PaymentStatus::Expired;
-        save_payment(&env, &key, &payment);
-
-        env.events().publish(
-            (symbol_short!("payment"), id, symbol_short!("expired")),
-            PaymentStatus::Expired,
-        );
-    }
-
-    /// Fetch payment details.
-    pub fn get_payment(env: Env, id: String) -> Payment {
-        env.storage().persistent().get(&DataKey::Payment(id)).expect("Payment not found")
-    }
-
-    /// Return the configured admin address.
-    pub fn get_admin(env: Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Contract not initialized")
-    }
-}
-
-mod test;
+    /// Permissionless: anyone may call this on
