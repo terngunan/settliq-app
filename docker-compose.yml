@@ -16,6 +16,7 @@ services:
     image: grafana/promtail:latest
     volumes:
       - ./grafana/promtail-config.yaml:/etc/promtail/config.yml
+      - ./backend/logs:/var/log/backend:ro
     command: -config.file=/etc/promtail/config.yml
     networks:
       - monitoring
