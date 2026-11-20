@@ -57,6 +57,14 @@ pub struct DepthThresholdUpdatedEvent {
     pub new_threshold_bps: u32,
 }
 
+// Issue #224: Event emitted when admin ownership is transferred
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminTransferred {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
 #[soroban_sdk::contractclient(name = "AmmClient")]
 pub trait AmmInterface {
     fn get_reserves(env: Env) -> (i128, i128);
@@ -204,7 +212,26 @@ impl LiquidityRouter {
             panic!("only admin can transfer admin");
         }
 
+        // Issue #225: Reject transferring admin to the contract itself, which
+        // would permanently lock admin capabilities since the contract cannot
+        // produce external signatures for require_auth().
+        assert!(
+            new_admin != env.current_contract_address(),
+            "cannot transfer admin to contract"
+        );
+        // Issue #225: Reject no-op re-assignment to the current admin.
+        assert!(new_admin != current_admin, "new admin must be different");
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        // Issue #224: Emit audit event for the ownership change
+        env.events().publish(
+            (Symbol::new(&env, "AdminTransferred"),),
+            AdminTransferred {
+                old_admin: stored_admin,
+                new_admin,
+            },
+        );
     }
 
     /// Returns the list of approved pools (issue #69)
@@ -230,15 +257,14 @@ impl LiquidityRouter {
     ) -> Route {
         // Issue #46: Reject zero and negative input amounts immediately.
         if amount_in <= 0 {
-            panic!("amount_in must be > 0");
+            panic!("amount must be positive");
         }
 
-        // Issue #1025: Validate pool_address against allowlist before calling get_reserves
+        // Issue #1025: Only allow routing through allowlisted pools
         let pools: Vec<Address> = env.storage().instance().get(&DataKey::ApprovedPools)
             .unwrap_or_else(|| Vec::new(&env));
-
         if !pools.iter().any(|p| p == pool_address) {
-            panic!("pool is not approved");
+            panic!("pool not allowlisted");
         }
 
         // Issue #1086: Query AMM reserves via cross-contract call using the
@@ -263,7 +289,7 @@ impl LiquidityRouter {
                 FallbackRouteUsed {
                     pool_id: pool_address,
                     amount: amount_in,
-                    reserve: relevant_reserve,
+                    reserve,
                 },
             );
             Route::StellarClassicDEX
