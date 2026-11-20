@@ -3,7 +3,7 @@
  *
  * Routes:
  *   GET /          → serves the status page HTML (with API_BASE injected)
- *   GET /api/status → proxies GET https://api.settliq.xyz/health/admin
+ *   GET /api/status → proxies GET https://api.settliq.xyz/api/v1/health/admin
  *                     (avoids CORS issues; adds cache-control)
  *
  * Deploy:
@@ -24,7 +24,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // ── Proxy: /api/status → upstream /health/admin ──────────────────────────
+    // ── Proxy: /api/status → upstream /api/v1/health/admin ───────────────────
     if (url.pathname === '/api/status') {
       return proxyHealthAdmin(env);
     }
@@ -43,13 +43,13 @@ export default {
   },
 };
 
-// ─── Proxy /health/admin ──────────────────────────────────────────────────────
+// ─── Proxy /api/v1/health/admin ───────────────────────────────────────────────
 async function proxyHealthAdmin(env) {
   const apiOrigin = env.API_ORIGIN ?? 'https://api.settliq.xyz';
 
   let upstreamRes;
   try {
-    upstreamRes = await fetch(`${apiOrigin}/health/admin`, {
+    upstreamRes = await fetch(`${apiOrigin}/api/v1/health/admin`, {
       headers: { Accept: 'application/json' },
       // Cloudflare fetch timeout is 30s by default
     });
