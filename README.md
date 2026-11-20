@@ -86,5 +86,5 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 <!-- handsoff-issue-106 -->
 - #106: merchant_registry: Unbounded page_size parameter in merchants query risks gas budget exhaustion
 
-<!-- handsoff-issue-231 -->
-- #231: [Smart Contract] payment_escrow: resolve_dispute_split marks payment as fully released to merchant corrupting accounting
+<!-- handsoff-issue-143 -->
+- #143: payment_escrow: Contract lacks transfer_admin entry point permanently locking admin authority
