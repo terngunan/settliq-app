@@ -39,6 +39,19 @@ describe('HealthController', () => {
     controller = module.get<HealthController>(HealthController);
   });
 
+  // ── GET /health ───────────────────────────────────────────────────────
+
+  describe('rootHealth', () => {
+    it('returns { status: "ok" } for liveness/readiness probes', () => {
+      expect(controller.rootHealth()).toEqual({ status: 'ok' });
+    });
+
+    it('does not call the health service', () => {
+      controller.rootHealth();
+      expect(healthService.check).not.toHaveBeenCalled();
+    });
+  });
+
   // ── GET /health/admin ─────────────────────────────────────────────────
 
   describe('adminHealth', () => {

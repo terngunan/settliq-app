@@ -134,4 +134,20 @@ describe('AdminWaitlistController', () => {
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/csv');
     expect(res.send).toHaveBeenCalledWith('email,username\n"a@b.com","alice"');
   });
+
+  it('defaults includeUnsubscribed to false when not provided', async () => {
+    const res = {
+      setHeader: jest.fn(),
+      send: jest.fn(),
+    } as any;
+
+    await controller.exportCsv(undefined, undefined, undefined, undefined, res);
+
+    expect(waitlistService.exportCsv).toHaveBeenCalledWith({
+      country: undefined,
+      dateFrom: undefined,
+      dateTo: undefined,
+      includeUnsubscribed: false,
+    });
+  });
 });

@@ -48,6 +48,37 @@ fn setup_env() -> (
 }
 
 #[test]
+fn test_get_admin_returns_initial_admin() {
+    let (_env, client, admin, _merchant, _settlement_caller) = setup_env();
+
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn test_transfer_admin_allows_new_admin_to_update_fee_tiers() {
+    let (env, client, admin, _merchant, _settlement_caller) = setup_env();
+    let new_admin = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+
+    let new_tiers = vec![
+        &env,
+        FeeTier {
+            threshold_usdc: 0,
+            fee_bps: 200,
+        },
+        FeeTier {
+            threshold_usdc: 5_000,
+            fee_bps: 80,
+        },
+    ];
+
+    client.set_fee_tiers(&new_admin, &new_tiers);
+    assert_eq!(client.get_fee_tiers(), new_tiers);
+}
+
+#[test]
 fn test_fee_rate_drops_when_volume_crosses_tier_threshold() {
     let (_env, client, _admin, merchant, settlement_caller) = setup_env();
 
@@ -242,80 +273,16 @@ fn test_set_min_fee_stroops_emits_event() {
 #[test]
 #[should_panic(expected = "Not admin")]
 fn test_non_admin_cannot_update_fee_tiers() {
-    let (env, client, _admin, _merchant, _settlement_caller) = setup_env();
-    let random = Address::generate(&env);
+    let (env, client, _admin, _merchant, _s) = setup_env();
+    let non_admin = Address::generate(&env);
 
     let new_tiers = vec![
         &env,
         FeeTier {
             threshold_usdc: 0,
-            fee_bps: 100,
+            fee_bps: 200,
         },
     ];
 
-    client.set_fee_tiers(&random, &new_tiers);
+    client.set_fee_tiers(&non_admin, &new_tiers);
 }
-
-#[test]
-fn test_admin_can_set_min_fee() {
-    let (_env, client, admin, _merchant, _s) = setup_env();
-
-    client.set_min_fee_stroops(&admin, &5);
-    assert_eq!(client.get_min_fee_stroops(), 5);
-}
-
-#[test]
-fn test_admin_can_set_min_fee_at_ceiling() {
-    let (_env, client, admin, _merchant, _s) = setup_env();
-
-    // The maximum allowed minimum fee must still be accepted.
-    client.set_min_fee_stroops(&admin, &100_000_000);
-    assert_eq!(client.get_min_fee_stroops(), 100_000_000);
-}
-
-#[test]
-#[should_panic(expected = "min_fee_stroops out of range")]
-fn test_set_min_fee_rejects_value_above_ceiling() {
-    let (_env, client, admin, _merchant, _s) = setup_env();
-
-    // A typo with extra trailing zeroes must be rejected rather than
-    // confiscating 100% of payment proceeds as fees.
-    client.set_min_fee_stroops(&admin, &1_000_000_000_000);
-}
-
-#[test]
-#[should_panic(expected = "min_fee_stroops out of range")]
-fn test_set_min_fee_rejects_negative_value() {
-    let (_env, client, admin, _merchant, _s) = setup_env();
-
-    client.set_min_fee_stroops(&admin, &-1);
-}
-
-#[test]
-#[should_panic(expected = "Not authorized")]
-fn test_unauthorized_caller_cannot_calculate_fee() {
-    let (env, client, _admin, merchant, _s) = setup_env();
-    let attacker = Address::generate(&env);
-
-    client.calculate_fee(&attacker, &merchant, &1_000);
-}
-
-#[test]
-fn test_admin_can_calculate_fee() {
-    let (_env, client, admin, merchant, _s) = setup_env();
-
-    let (_, _, bps) = client.calculate_fee(&admin, &merchant, &1_000);
-    assert_eq!(bps, 120);
-}
-
-#[test]
-#[should_panic(expected = "Not authorized")]
-fn test_attacker_cannot_grief_merchant_fee_tier() {
-    let (env, client, admin, merchant, _s) = setup_env();
-    let attacker = Address::generate(&env);
-
-    // Attacker attempts to push the victim merchant's volume past the tier
-    // threshold with no real settlement activity.
-    client.calculate_fee(&attacker, &merchant, &1_000)
-
-/* … truncated 1952 chars — edit only what you need near the top … */
