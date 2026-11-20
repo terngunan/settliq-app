@@ -13,6 +13,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Bytes, Env
 /// immediately self-execute every proposal, silently defeating the entire
 /// multisig premise. If this constant is ever made configurable, the setter
 /// MUST enforce `assert!(new_threshold >= 2)`.
+const MAX_ADMINS: u32 = 10;
 const THRESHOLD: u32 = 2;
 const EXPIRY_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 
@@ -328,6 +329,7 @@ impl MultisigAdminContract {
             if Self::contains_address(&admins, &new_admin) {
                 panic!("admin already exists");
             }
+            assert!(admins.len() < MAX_ADMINS, "maximum number of admins reached");
             admins.push_back(new_admin);
             env.storage().instance().set(&DataKey::Admins, &admins);
         } else if op == String::from_str(env, "remove_admin") {

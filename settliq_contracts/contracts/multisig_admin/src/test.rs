@@ -237,3 +237,17 @@ fn test_set_threshold_to_two_succeeds() {
 
     assert_eq!(client.get_threshold(), 2);
 }
+
+#[test]
+#[should_panic(expected = "maximum number of admins reached")]
+fn test_eleventh_admin_rejected() {
+    let (env, client, proposer, approver, _) = setup_env();
+    let operation = op(&env, "add_admin");
+    for size in 3..=10 {
+        assert_eq!(client.get_admins().len(), size);
+        let mut encoded = [0; 56];
+        Address::generate(&env).to_string().copy_into_slice(&mut encoded);
+        let id = client.propose(&proposer, &operation, &Bytes::from_slice(&env, &encoded));
+        client.approve(&approver, &id);
+    }
+}
