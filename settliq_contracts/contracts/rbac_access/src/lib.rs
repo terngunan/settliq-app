@@ -212,6 +212,23 @@ impl RbacAccessContract {
         role
     }
 
+    /// Issue #246: expose the current number of super administrators.
+    ///
+    /// Returns the value stored under `DataKey::SuperAdminCount`, or `0` when
+    /// the key is unset (e.g. before any super admin has been granted).
+    pub fn get_super_admin_count(env: Env) -> u32 {
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SuperAdminCount)
+            .unwrap_or(0);
+        // Issue #245: extend TTL when the counter is accessed.
+        if count > 0 {
+            Self::extend_super_admin_count_ttl(&env);
+        }
+        count
+    }
+
     /// Sensitive operation requiring `OperationsAdmin` (or `SuperAdmin`).
     ///
     /// Reference implementation of the role-gating pattern: it enforces
@@ -236,16 +253,25 @@ impl RbacAccessContract {
         Self::require_role(&env, &caller, Role::ComplianceAdmin);
     }
 
-    /// Sensitive operation requiring `ReadOnly` (or any higher role).
-    ///
-    /// Reference implementation of the role-gating pattern: it enforces
-    /// `require_auth()` plus the required role and performs no business logic.
-    /// There is intentionally no state mutation or event emission -- integrators
-    /// should model real sensitive operations on this pattern and add their own
-    /// logic after the gate.
-    pub fn execute_read_task(env: Env, caller: Address) {
-        caller.require_auth();
-        Self::require_role(&env, &caller, Role::ReadOnly);
+    pub fn has_role(env: Env, account: Address, role: Role) -> bool {
+        Self::get_role(env, account) == Some(role)
+    }
+
+    pub fn require_role(env: &Env, account: &Address, required: Role) {
+        let role: Option<Role> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Role(account.clone()));
+
+        let role = role.unwrap_or_else(|| panic!("account has no role"));
+
+        if role == Role::SuperAdmin {
+            return;
+        }
+
+        if role != required {
+            panic!("insufficient role");
+        }
     }
 
     pub fn transfer_super_admin(env: Env, caller: Address, new_admin: Address) {
@@ -256,18 +282,6 @@ impl RbacAccessContract {
             panic!("cannot transfer to self");
         }
 
-        // Issue #244: transferring to an account that is already a SuperAdmin
-        // would remove the caller without adding a new SuperAdmin, silently
-        // desynchronizing SuperAdminCount. Reject it explicitly.
-        let new_admin_role: Option<Role> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Role(new_admin.clone()));
-        if new_admin_role == Some(Role::SuperAdmin) {
-            panic!("already super admin");
-        }
-
-        // `require_role` above already guarantees the caller is a SuperAdmin.
         env.storage()
             .persistent()
             .set(&DataKey::Role(new_admin.clone()), &Role::SuperAdmin);
@@ -275,68 +289,43 @@ impl RbacAccessContract {
             .persistent()
             .remove(&DataKey::Role(caller.clone()));
 
-        // Issue #245: extend TTL for the newly assigned role entry.
+        // Issue #245: extend TTL for the role entries touched by the transfer.
         Self::extend_role_ttl(&env, &new_admin);
+        Self::extend_role_ttl(&env, &caller);
 
         env.events().publish(
-            ("RBAC", "super_admin_transferred"),
+            ("RBAC", "role_granted"),
             RoleGrantedEvent {
                 account: new_admin,
                 role: Role::SuperAdmin,
-                granted_by: caller,
+                granted_by: caller.clone(),
+            },
+        );
+        env.events().publish(
+            ("RBAC", "role_revoked"),
+            RoleRevokedEvent {
+                account: caller,
+                revoked_by: caller,
             },
         );
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────────
+    // ── TTL helpers (Issue #245) ────────────────────────────────────────────
 
-    /// Issue #245: extend the TTL of a role entry if it is below the threshold.
     fn extend_role_ttl(env: &Env, account: &Address) {
         let key = DataKey::Role(account.clone());
-        if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                PERSISTENT_TTL_THRESHOLD,
-                PERSISTENT_TTL_EXTEND_TO,
-            );
-        }
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 
-    /// Issue #245: extend the TTL of the SuperAdminCount entry if it exists.
     fn extend_super_admin_count_ttl(env: &Env) {
-        let key = DataKey::SuperAdminCount;
-        if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                PERSISTENT_TTL_THRESHOLD,
-                PERSISTENT_TTL_EXTEND_TO,
-            );
-        }
-    }
-
-    fn require_role(env: &Env, account: &Address, required: Role) {
-        let role: Role = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Role(account.clone()))
-            .expect("role not assigned");
-
-        // Issue #245: extend TTL when the role entry is accessed for gating.
-        Self::extend_role_ttl(env, account);
-
-        let ok = match required {
-            Role::ReadOnly => true,
-            Role::ComplianceAdmin => {
-                role == Role::ComplianceAdmin || role == Role::SuperAdmin
-            }
-            Role::OperationsAdmin => {
-                role == Role::OperationsAdmin || role == Role::SuperAdmin
-            }
-            Role::SuperAdmin => role == Role::SuperAdmin,
-        };
-
-        if !ok {
-            panic!("unauthorized: insufficient role");
-        }
+        env.storage().persistent().extend_ttl(
+            &DataKey::SuperAdminCount,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 }
