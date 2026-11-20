@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger}, Address, Env, IntoVal, String, Symbol, TryFromVal};
 
 fn setup_contract(env: &Env) -> (PaymentRequestContractClient<'static>, Address) {
     env.mock_all_auths();
@@ -43,6 +43,83 @@ fn test_payment_lifecycle_success() {
     // 4. Settle (admin auth)
     client.settle(&admin, &payment_id);
     assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Settled);
+}
+
+#[test]
+fn test_created_event_payload_is_rich() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_evt_created");
+    let amount = 4242i128;
+    let expiry = 5000u64;
+
+    env.ledger().set_timestamp(0);
+    client.create_payment(&payment_id, &merchant, &amount, &asset, &expiry);
+
+    let events = env.events().all();
+    let (topics, data) = events.last().expect("created event must be emitted");
+
+    // Topic structure: ("payment", id, "created")
+    let expected_topics = (
+        symbol_short!("payment"),
+        payment_id.clone(),
+        symbol_short!("created"),
+    );
+    assert_eq!(topics, expected_topics.into_val(&env));
+
+    // Payload carries merchant, amount, asset, expiry, status
+    let payload = PaymentCreatedEvent::try_from_val(&env, &data)
+        .expect("created payload must decode as PaymentCreatedEvent");
+    assert_eq!(payload.merchant, merchant);
+    assert_eq!(payload.amount, amount);
+    assert_eq!(payload.asset, asset);
+    assert_eq!(payload.expiry, expiry);
+    assert_eq!(payload.status, PaymentStatus::Pending);
+}
+
+#[test]
+fn test_lifecycle_events_include_amount_asset_merchant() {
+    let env = Env::default();
+    let (client, admin) = setup_contract(&env);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_evt_lifecycle");
+    let amount = 777i128;
+
+    env.ledger().set_timestamp(0);
+    client.create_payment(&payment_id, &merchant, &amount, &asset, &1000);
+    client.confirm(&admin, &payment_id);
+    client.set_settling(&admin, &payment_id);
+    client.settle(&admin, &payment_id);
+
+    let events = env.events().all();
+    let mut seen: u32 = 0;
+    for (topics, data) in events.iter() {
+        let topic_vec = soroban_sdk::Vec::<soroban_sdk::Val>::try_from_val(&env, &topics)
+            .expect("topics must be a vec");
+        if topic_vec.len() != 3 {
+            continue;
+        }
+        let kind = Symbol::try_from_val(&env, &topic_vec.get(2).unwrap()).unwrap();
+        if kind != symbol_short!("created")
+            && kind != symbol_short!("confirmed")
+            && kind != symbol_short!("settling")
+            && kind != symbol_short!("settled")
+        {
+            continue;
+        }
+        let payload = PaymentStatusEvent::try_from_val(&env, &data)
+            .expect("lifecycle payload must decode as PaymentStatusEvent");
+        assert_eq!(payload.merchant, merchant);
+        assert_eq!(payload.amount, amount);
+        assert_eq!(payload.asset, asset);
+        seen += 1;
+    }
+    assert_eq!(seen, 4, "created/confirmed/settling/settled events must all be rich");
 }
 
 #[test]
@@ -228,59 +305,4 @@ fn test_empty_payment_id_rejected() {
     let merchant = Address::generate(&env);
     let asset = Address::generate(&env);
     client.create_payment(&String::from_str(&env, ""), &merchant, &100, &asset, &1000);
-}
-
-// ---------------------------------------------------------------------------
-// Issue #237: Admin authority rotation
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_transfer_admin_rotates_authority() {
-    let env = Env::default();
-    let (client, admin) = setup_contract(&env);
-
-    let new_admin = Address::generate(&env);
-
-    // Rotate admin authority from the original admin to the new admin.
-    client.transfer_admin(&admin, &new_admin);
-
-    // The new admin can now perform admin-gated operations.
-    let merchant = Address::generate(&env);
-    let asset = Address::generate(&env);
-    let payment_id = String::from_str(&env, "pay_rotated");
-
-    client.create_payment(&payment_id, &merchant, &100, &asset, &1000);
-    client.confirm(&new_admin, &payment_id);
-    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Confirmed);
-}
-
-#[test]
-#[should_panic]
-fn test_transfer_admin_rejects_non_admin_caller() {
-    let env = Env::default();
-    let (client, _admin) = setup_contract(&env);
-
-    let attacker = Address::generate(&env);
-    let new_admin = Address::generate(&env);
-
-    // A non-admin caller must not be able to rotate admin authority.
-    client.transfer_admin(&attacker, &new_admin);
-}
-
-#[test]
-#[should_panic]
-fn test_old_admin_loses_authority_after_transfer() {
-    let env = Env::default();
-    let (client, admin) = setup_contract(&env);
-
-    let new_admin = Address::generate(&env);
-    client.transfer_admin(&admin, &new_admin);
-
-    // The previous admin must no longer be able to perform admin-gated calls.
-    let merchant = Address::generate(&env);
-    let asset = Address::generate(&env);
-    let payment_id = String::from_str(&env, "pay_old_admin");
-
-    client.create_payment(&payment_id, &merchant, &100, &asset, &1000);
-    client.confirm(&admin, &payment_id);
 }

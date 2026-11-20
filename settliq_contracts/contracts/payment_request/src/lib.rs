@@ -53,6 +53,23 @@ pub struct AdminTransferredEvent {
     pub timestamp: u64,
 }
 
+/// Rich event payload emitted on every payment lifecycle transition.
+///
+/// Carries the full payment identity (merchant, amount, asset, expiry) plus the
+/// resulting status so off-chain indexers can reconstruct historical payments
+/// from event logs alone, without relying on persistent storage retention.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentEvent {
+    pub id: String,
+    pub merchant: Address,
+    pub amount: i128,
+    pub asset: Address,
+    pub status: PaymentStatus,
+    pub expiry: u64,
+    pub timestamp: u64,
+}
+
 #[contract]
 pub struct PaymentRequestContract;
 
@@ -88,6 +105,19 @@ fn require_admin(env: &Env, caller: &Address) {
         .expect("Contract not initialized");
     if caller != &admin {
         panic!("Not admin");
+    }
+}
+
+/// Build the rich event payload for a payment's current state.
+fn payment_event(env: &Env, payment: &Payment) -> PaymentEvent {
+    PaymentEvent {
+        id: payment.id.clone(),
+        merchant: payment.merchant.clone(),
+        amount: payment.amount,
+        asset: payment.asset.clone(),
+        status: payment.status.clone(),
+        expiry: payment.expiry,
+        timestamp: env.ledger().timestamp(),
     }
 }
 
@@ -176,7 +206,7 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("created")),
-            PaymentStatus::Pending,
+            payment_event(&env, &payment),
         );
     }
 
@@ -204,7 +234,7 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("confirmed")),
-            PaymentStatus::Confirmed,
+            payment_event(&env, &payment),
         );
     }
 
@@ -228,7 +258,7 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("settling")),
-            PaymentStatus::Settling,
+            payment_event(&env, &payment),
         );
     }
 
@@ -254,13 +284,14 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("settled")),
-            PaymentStatus::Settled,
+            payment_event(&env, &payment),
         );
     }
 
     /// Mark payment as failed.
     ///
-    /// Requires admin authorization.
+    /// Requires admin authorization — the backend settlement daemon reports
+    /// failed payouts.
     pub fn fail(env: Env, caller: Address, id: String) {
         caller.require_auth();
         require_admin(&env, &caller);
@@ -268,11 +299,8 @@ impl PaymentRequestContract {
         let key = DataKey::Payment(id.clone());
         let mut payment = load_payment(&env, &key);
 
-        // Prevent failing during in-flight fiat payout (#81)
-        if payment.status == PaymentStatus::Settled ||
-           payment.status == PaymentStatus::Expired ||
-           payment.status == PaymentStatus::Settling {
-            panic!("Cannot fail a finalized or in-flight payment");
+        if is_terminal(&payment.status) {
+            panic!("Invalid transition: payment already terminal");
         }
 
         payment.status = PaymentStatus::Failed;
@@ -280,12 +308,40 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("failed")),
-            PaymentStatus::Failed,
+            payment_event(&env, &payment),
         );
     }
 
     /// Mark payment as expired.
     ///
-    /// Pe
+    /// Requires admin authorization — the backend expiry sweeper drives this
+    /// transition once the payment's expiry timestamp has passed.
+    pub fn expire(env: Env, caller: Address, id: String) {
+        caller.require_auth();
+        require_admin(&env, &caller);
 
-/* … truncated 38 chars — edit only what you need near the top … */
+        let key = DataKey::Payment(id.clone());
+        let mut payment = load_payment(&env, &key);
+
+        if is_terminal(&payment.status) {
+            panic!("Invalid transition: payment already terminal");
+        }
+
+        if env.ledger().timestamp() <= payment.expiry {
+            panic!("Payment not yet expired");
+        }
+
+        payment.status = PaymentStatus::Expired;
+        save_payment(&env, &key, &payment);
+
+        env.events().publish(
+            (symbol_short!("payment"), id, symbol_short!("expired")),
+            payment_event(&env, &payment),
+        );
+    }
+
+    /// Read a payment record.
+    pub fn get_payment(env: Env, id: String) -> Payment {
+        load_payment(&env, &DataKey::Payment(id))
+    }
+}
