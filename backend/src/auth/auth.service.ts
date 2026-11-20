@@ -52,9 +52,7 @@ export class AuthService {
     const merchant = this.merchantsRepo.create({
       email: dto.email,
       passwordHash,
-      businessName: dto.businessName,
-      businessType: dto.businessType,
-      country: dto.country,
+      name: dto.name,
       status: MerchantStatus.PENDING,
     });
 
@@ -215,78 +213,8 @@ export class AuthService {
   async findMerchantByApiKey(rawKey: string): Promise<Merchant | null> {
     const lookupHash = crypto.createHash('sha256').update(rawKey).digest('hex');
 
-    const merchant = await this.merchantsRepo.createQueryBuilder('merchant')
-      .addSelect('merchant.apiKeyHash')
-      .where('merchant.apiKeyLookupHash = :lookupHash', { lookupHash })
-      .getOne();
+    const merchant = await this.merchantsRepo.findOne({
+      where: { apiKeyLookupHash: lookupHash },
+      wi
 
-    if (!merchant?.apiKeyHash) {
-      return null;
-    }
-
-    const valid = await bcrypt.compare(rawKey, merchant.apiKeyHash);
-    if (!valid) {
-      return null;
-    }
-
-    if (merchant.status !== MerchantStatus.ACTIVE) {
-      throw new UnauthorizedException('Merchant account is suspended or inactive');
-    }
-
-    delete merchant.apiKeyHash;
-    return merchant;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
-
-  /** Generate a fresh access + refresh token pair, persist the hashed refresh
-   * token, and return the full response DTO.
-   */
-  private async issueTokenPair(merchant: Merchant): Promise<AuthTokenResponseDto> {
-    const accessToken = this.signToken(merchant.id, merchant.email, merchant.role);
-
-    // Generate a cryptographically random opaque refresh token.
-    const rawRefreshToken = crypto.randomBytes(40).toString('hex');
-    const tokenHash = this.hashToken(rawRefreshToken);
-
-    const record = this.refreshTokenRepo.create({
-      tokenHash,
-      merchantId: merchant.id,
-      merchant,
-      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
-    });
-    await this.refreshTokenRepo.save(record);
-
-    const { passwordHash: _, apiKeyHash: __, ...merchantData } = merchant;
-    return { accessToken, refreshToken: rawRefreshToken, merchant: merchantData };
-  }
-
-  /** Create a new random plaintext API key with the standard prefix. */
-  private createRawApiKey(): string {
-    return `${API_KEY_PREFIX}${crypto.randomBytes(API_KEY_BYTES).toString('hex')}`;
-  }
-
-  /**
-   * Derive the persisted hashes for a raw API key:
-   *  - `apiKeyHash`: bcrypt hash used for constant-time verification.
-   *  - `apiKeyLookupHash`: SHA-256 hex digest used for O(1) indexed lookup.
-   */
-  private async hashApiKey(
-    rawKey: string,
-  ): Promise<{ apiKeyHash: string; apiKeyLookupHash: string }> {
-    const apiKeyHash = await bcrypt.hash(rawKey, 12);
-    const apiKeyLookupHash = crypto.createHash('sha256').update(rawKey).digest('hex');
-    return { apiKeyHash, apiKeyLookupHash };
-  }
-
-  /** SHA-256 hex digest of a raw token string. */
-  private hashToken(raw: string): string {
-    return crypto.createHash('sha256').update(raw).digest('hex');
-  }
-
-  private signToken(sub: string, email: string, role?: string): string {
-    return this.jwtService.sign({ sub, email, role });
-  }
-}
+/* … truncated 73 chars — edit only what you need near the top … */

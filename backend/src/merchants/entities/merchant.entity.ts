@@ -1,11 +1,13 @@
 import {
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   Entity,
   Index,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 
 export enum MerchantRole {
   MERCHANT = 'merchant',
@@ -14,9 +16,14 @@ export enum MerchantRole {
 }
 
 export enum MerchantStatus {
-  PENDING = 'pending',
   ACTIVE = 'active',
+  INACTIVE = 'inactive',
   SUSPENDED = 'suspended',
+}
+
+export enum MerchantRole {
+  MERCHANT = 'merchant',
+  ADMIN = 'admin',
 }
 
 @Entity('merchants')
@@ -24,50 +31,62 @@ export class Merchant {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ unique: true })
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 255 })
   email: string;
 
-  @Column()
-  name: string;
+  @Exclude()
+  @Column({ type: 'varchar', length: 255, name: 'password_hash' })
+  passwordHash: string;
 
-  @Column({ nullable: true })
-  passwordHash?: string;
+  @Column({ type: 'varchar', length: 255, name: 'business_name' })
+  businessName: string;
 
-  @Column({ nullable: true, select: false })
-  passwordResetToken?: string;
+  @Column({ type: 'varchar', length: 100, name: 'business_type' })
+  businessType: string;
 
-  @Column({ type: 'timestamptz', nullable: true })
-  passwordResetExpiry?: Date;
-
-  @Column({ nullable: true, select: false })
-  apiKeyHash?: string;
-
-  @Index('IDX_merchants_apiKeyLookupHash')
-  @Column({ nullable: true, select: false })
-  apiKeyLookupHash?: string;
-
-  @Column({ nullable: true })
-  apiKeyLastFour?: string;
-
-  @Column({ type: 'timestamptz', nullable: true })
-  apiKeyCreatedAt?: Date;
-
-  @Column({ type: 'timestamptz', nullable: true })
-  apiKeyRevokedAt?: Date;
+  @Column({ type: 'varchar', length: 2 })
+  country: string;
 
   @Column({
     type: 'enum',
     enum: MerchantStatus,
-    default: MerchantStatus.PENDING,
+    default: MerchantStatus.ACTIVE,
   })
   status: MerchantStatus;
 
-  @Column({ type: 'enum', enum: MerchantRole, default: MerchantRole.MERCHANT })
+  @Column({
+    type: 'enum',
+    enum: MerchantRole,
+    default: MerchantRole.MERCHANT,
+  })
   role: MerchantRole;
 
-  @CreateDateColumn()
+  @Exclude()
+  @Column({ type: 'varchar', length: 255, name: 'api_key_hash', nullable: true })
+  apiKeyHash: string | null;
+
+  @Column({
+    type: 'decimal',
+    precision: 5,
+    scale: 4,
+    default: 0.015,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string) => parseFloat(value),
+    },
+  })
+  feeRate: number;
+
+  @Column({ type: 'boolean', name: 'sandbox_mode', default: false })
+  sandboxMode: boolean;
+
+  @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
+
+  @DeleteDateColumn({ name: 'deleted_at', nullable: true })
+  deletedAt: Date | null;
 }

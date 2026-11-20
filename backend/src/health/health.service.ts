@@ -3,15 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
-export type ComponentStatus = 'healthy' | 'degraded' | 'down';
-
 export interface ComponentHealth {
-  status: ComponentStatus;
+  status: 'healthy' | 'degraded' | 'down';
   latency: number;
+  message?: string;
 }
 
 export interface HealthReport {
-  status: ComponentStatus;
+  status: 'healthy' | 'degraded' | 'down';
   timestamp: string;
   components: {
     database: ComponentHealth;
@@ -22,8 +21,7 @@ export interface HealthReport {
 @Injectable()
 export class HealthService {
   constructor(
-    @InjectDataSource()
-    private readonly dataSource: DataSource,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly config: ConfigService,
   ) {}
 
@@ -33,50 +31,62 @@ export class HealthService {
       this.checkStellar(),
     ]);
 
-    const overallStatus = this.aggregate([database.status, stellar.status]);
+    const statuses = [database.status, stellar.status];
+    let status: HealthReport['status'] = 'healthy';
+    if (statuses.includes('down')) {
+      status = 'down';
+    } else if (statuses.includes('degraded')) {
+      status = 'degraded';
+    }
 
     return {
-      status: overallStatus,
+      status,
       timestamp: new Date().toISOString(),
       components: { database, stellar },
     };
   }
-
-  // ── Database ──────────────────────────────────────────────────────────────
 
   async checkDatabase(): Promise<ComponentHealth> {
     const start = Date.now();
     try {
       await this.dataSource.query('SELECT 1');
       return { status: 'healthy', latency: Date.now() - start };
-    } catch {
-      return { status: 'down', latency: Date.now() - start };
+    } catch (err) {
+      return {
+        status: 'down',
+        latency: Date.now() - start,
+        message: err instanceof Error ? err.message : 'Database unreachable',
+      };
     }
   }
-
-  // ── Stellar Horizon ───────────────────────────────────────────────────────
 
   async checkStellar(): Promise<ComponentHealth> {
+    const start = Date.now();
     const horizonUrl =
       this.config.get<string>('STELLAR_HORIZON_URL') ?? 'https://horizon.stellar.org';
-    const start = Date.now();
+    const timeoutMs = this.config.get<number>('STELLAR_HEALTH_TIMEOUT_MS', 5000);
+
     try {
       const res = await fetch(`${horizonUrl}`, {
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(timeoutMs),
         headers: { Accept: 'application/json' },
       });
-      const latency = Date.now() - start;
-      return { status: res.ok ? 'healthy' : 'degraded', latency };
-    } catch {
-      return { status: 'down', latency: Date.now() - start };
+
+      if (!res.ok) {
+        return {
+          status: 'degraded',
+          latency: Date.now() - start,
+          message: `Horizon responded with status ${res.status}`,
+        };
+      }
+
+      return { status: 'healthy', latency: Date.now() - start };
+    } catch (err) {
+      return {
+        status: 'down',
+        latency: Date.now() - start,
+        message: err instanceof Error ? err.message : 'Stellar Horizon unreachable',
+      };
     }
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  private aggregate(statuses: ComponentStatus[]): ComponentStatus {
-    if (statuses.some((s) => s === 'down')) return 'down';
-    if (statuses.some((s) => s === 'degraded')) return 'degraded';
-    return 'healthy';
   }
 }

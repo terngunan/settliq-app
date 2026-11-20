@@ -6,14 +6,13 @@ export class JoinWaitlistDto {
   @Transform(({ value }) => value?.trim().toLowerCase())
   email: string;
 
-  @IsOptional()
   @IsString()
   @Length(3, 30)
   @Matches(/^[a-zA-Z0-9_]+$/, {
     message: 'username may only contain letters, numbers, and underscores',
   })
   @Transform(({ value }) => value?.trim().toLowerCase())
-  username?: string;
+  username: string;
 
   @IsOptional()
   @IsString()
