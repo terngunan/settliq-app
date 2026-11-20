@@ -24,6 +24,8 @@ services:
 
   grafana:
     image: grafana/grafana:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "3000:3000"
     volumes:

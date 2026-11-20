@@ -2,9 +2,16 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+
+export enum MerchantRole {
+  MERCHANT = 'merchant',
+  ADMIN = 'admin',
+  SUPERADMIN = 'superadmin',
+}
 
 export enum MerchantStatus {
   PENDING = 'pending',
@@ -35,6 +42,7 @@ export class Merchant {
   @Column({ nullable: true, select: false })
   apiKeyHash?: string;
 
+  @Index('IDX_merchants_apiKeyLookupHash')
   @Column({ nullable: true, select: false })
   apiKeyLookupHash?: string;
 
@@ -53,6 +61,9 @@ export class Merchant {
     default: MerchantStatus.PENDING,
   })
   status: MerchantStatus;
+
+  @Column({ type: 'enum', enum: MerchantRole, default: MerchantRole.MERCHANT })
+  role: MerchantRole;
 
   @CreateDateColumn()
   createdAt: Date;
