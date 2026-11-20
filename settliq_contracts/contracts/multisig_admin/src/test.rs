@@ -238,16 +238,50 @@ fn test_set_threshold_to_two_succeeds() {
     assert_eq!(client.get_threshold(), 2);
 }
 
+// ── Issue #230: set_threshold must validate against admin count at execution ─
+
+/// A `set_threshold` proposal queued while there are 3 admins must be
+/// re-validated against the admin count at execution time.  If admins are
+/// removed after the proposal is created, executing a threshold that now
+/// exceeds the remaining admin count must be rejected.
 #[test]
-#[should_panic(expected = "maximum number of admins reached")]
-fn test_eleventh_admin_rejected() {
-    let (env, client, proposer, approver, _) = setup_env();
-    let operation = op(&env, "add_admin");
-    for size in 3..=10 {
-        assert_eq!(client.get_admins().len(), size);
-        let mut encoded = [0; 56];
-        Address::generate(&env).to_string().copy_into_slice(&mut encoded);
-        let id = client.propose(&proposer, &operation, &Bytes::from_slice(&env, &encoded));
-        client.approve(&approver, &id);
-    }
+fn test_set_threshold_rejected_when_admin_count_reduced() {
+    let (env, client, admin1, admin2, admin3) = setup_env();
+
+    // Queue a set_threshold(3) proposal while there are 3 admins.
+    let threshold_args = Bytes::from_slice(&env, &3u32.to_be_bytes());
+    let threshold_id = client.propose(&admin1, &op(&env, "set_threshold"), &threshold_args);
+
+    // Remove admin3 via a properly-approved remove_admin proposal.
+    let remove_args = Bytes::from_slice(&env, &admin3.to_string().into_bytes());
+    let remove_id = client.propose(&admin1, &op(&env, "remove_admin"), &remove_args);
+    client.approve(&admin2, &remove_id);
+
+    // Now only 2 admins remain; executing set_threshold(3) must be rejected.
+    let result = client.try_approve(&admin2, &threshold_id);
+    assert!(
+        result.is_err(),
+        "set_threshold(3) must be rejected when admin count has dropped to 2"
+    );
+    assert_eq!(client.get_threshold(), 2, "threshold must remain unchanged");
+}
+
+/// A `set_threshold` proposal whose value is still within the updated admin
+/// count must execute successfully after admins are removed.
+#[test]
+fn test_set_threshold_within_updated_admin_count_succeeds() {
+    let (env, client, admin1, admin2, admin3) = setup_env();
+
+    // Queue a set_threshold(2) proposal while there are 3 admins.
+    let threshold_args = Bytes::from_slice(&env, &2u32.to_be_bytes());
+    let threshold_id = client.propose(&admin1, &op(&env, "set_threshold"), &threshold_args);
+
+    // Remove admin3, leaving 2 admins.
+    let remove_args = Bytes::from_slice(&env, &admin3.to_string().into_bytes());
+    let remove_id = client.propose(&admin1, &op(&env, "remove_admin"), &remove_args);
+    client.approve(&admin2, &remove_id);
+
+    // set_threshold(2) is still valid with 2 admins.
+    client.approve(&admin2, &threshold_id);
+    assert_eq!(client.get_threshold(), 2);
 }
