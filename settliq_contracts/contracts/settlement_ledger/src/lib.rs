@@ -234,23 +234,58 @@ impl SettlementLedgerContract {
         record
     }
 
-    /// Marks a settlement as void without mutating or deleting the original
-    /// immutable record. A corrected settlement must be recorded under a new
-    /// payment ID and can reference this one in its fiat reference.
-    pub fn void_settlement(env: Env, caller: Address, payment_id: BytesN<32>, reason: String) {
+    /// Returns `true` if the settlement identified by `payment_id` has been
+    /// voided, `false` otherwise. Callable by anyone.
+    pub fn is_voided(env: Env, payment_id: BytesN<32>) -> bool {
+        let key = DataKey::Void(payment_id);
+        let exists = env.storage().persistent().has(&key);
+        if exists {
+            Self::bump_ttl(&env, &key);
+        }
+        exists
+    }
+
+    /// Returns the void details (reason and timestamp) for a settlement, or
+    /// `None` if the settlement has not been voided. Callable by anyone.
+    pub fn get_void(env: Env, payment_id: BytesN<32>) -> Option<SettlementVoid> {
+        let key = DataKey::Void(payment_id);
+        let void: Option<SettlementVoid> = env.storage().persistent().get(&key);
+        if void.is_some() {
+            Self::bump_ttl(&env, &key);
+        }
+        void
+    }
+
+    /// Mark a settlement as voided without mutating the original record.
+    /// Admin-only. Panics if the settlement does not exist or is already voided.
+    pub fn void_settlement(
+        env: Env,
+        caller: Address,
+        payment_id: BytesN<32>,
+        reason: String,
+    ) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
-        assert!(env.storage().persistent().has(&DataKey::Settlement(payment_id.clone())), "settlement not found");
+
+        let settlement_key = DataKey::Settlement(payment_id.clone());
+        assert!(
+            env.storage().persistent().has(&settlement_key),
+            "settlement not found"
+        );
+
         let void_key = DataKey::Void(payment_id.clone());
-        assert!(!env.storage().persistent().has(&void_key), "settlement already voided");
+        assert!(
+            !env.storage().persistent().has(&void_key),
+            "settlement already voided"
+        );
 
         let voided_at = env.ledger().timestamp();
-        let marker = SettlementVoid {
+        let void = SettlementVoid {
             payment_id: payment_id.clone(),
             reason: reason.clone(),
             voided_at,
         };
-        env.storage().persistent().set(&void_key, &marker);
+        env.storage().persistent().set(&void_key, &void);
         Self::bump_ttl(&env, &void_key);
 
         env.events().publish(
@@ -263,51 +298,7 @@ impl SettlementLedgerContract {
         );
     }
 
-    /// Fetch a void marker by payment_id. Callable by anyone.
-    pub fn get_void(env: Env, payment_id: BytesN<32>) -> SettlementVoid {
-        let key = DataKey::Void(payment_id);
-        let marker: SettlementVoid = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("void not found");
-        Self::bump_ttl(&env, &key);
-        marker
-    }
-
-    /// Fetch a page of a merchant's settlement IDs. Callable by anyone.
-    pub fn get_merchant_page(env: Env, merchant: Address, page: u32) -> Vec<BytesN<32>> {
-        let key = DataKey::MerchantPage(merchant, page);
-        let ids: Vec<BytesN<32>> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| vec![&env]);
-        Self::bump_ttl(&env, &key);
-        ids
-    }
-
-    /// Fetch a page of platform-wide settlement IDs. Callable by anyone.
-    pub fn get_all_page(env: Env, page: u32) -> Vec<BytesN<32>> {
-        let key = DataKey::AllPage(page);
-        let ids: Vec<BytesN<32>> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| vec![&env]);
-        Self::bump_ttl(&env, &key);
-        ids
-    }
-
     // ── internal helpers ─────────────────────────────────────────────────────
-
-    /// Extend the TTL of a persistent entry so settlement history is never
-    /// archived while it may still be queried on-chain.
-    fn bump_ttl(env: &Env, key: &DataKey) {
-        env.storage()
-            .persistent()
-            .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
-    }
 
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env
@@ -316,5 +307,11 @@ impl SettlementLedgerContract {
             .get(&DataKey::Admin)
             .expect("admin not set");
         assert!(caller == &admin, "caller is not admin");
+    }
+
+    fn bump_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 }
