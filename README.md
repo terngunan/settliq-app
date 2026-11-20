@@ -94,3 +94,6 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 
 <!-- handsoff-issue-234 -->
 - #234: [Smart Contract] payment_escrow: Contract lacks set_upgrade_delay_ledgers and get_upgrade_delay_ledgers entry points
+
+<!-- handsoff-issue-235 -->
+- #235: [Smart Contract] payment_escrow: schedule_upgrade overwrites pending upgrade hash without checking if upgrade is already pending
