@@ -154,9 +154,9 @@ impl ReconciliationContract {
     pub fn verify_settlement(env: Env, payment_id: BytesN<32>, proof: Vec<MerkleProofNode>) -> bool {
         let current = match Self::get_current_batch(env.clone()) {
             Some(b) => b,
-            None => return true,
+            None => return false,
         };
-        !Self::verify_against_root(&env, &current.merkle_root, &payment_id, &proof)
+        Self::verify_against_root(&env, &current.merkle_root, &payment_id, &proof)
     }
 
     pub fn verify_settlement_proof(
@@ -232,5 +232,63 @@ impl ReconciliationContract {
         left.copy_into_slice(&mut buf[..32]);
         right.copy_into_slice(&mut buf[32..]);
         env.crypto().sha256(&soroban_sdk::Bytes::from_array(env, &buf)).to_bytes()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{BytesN, Env, Vec};
+
+    fn setup() -> (Env, ReconciliationContractClient<'static>, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(ReconciliationContract, (&admin,));
+        let client = ReconciliationContractClient::new(&env, &contract_id);
+        (env, client, admin)
+    }
+
+    #[test]
+    fn test_verify_settlement_no_batch_returns_false() {
+        let (env, client, _admin) = setup();
+        let payment_id = BytesN::from_array(&env, &[7u8; 32]);
+        let proof: Vec<MerkleProofNode> = Vec::new(&env);
+        assert!(!client.verify_settlement(&payment_id, &proof));
+    }
+
+    #[test]
+    fn test_verify_settlement_valid_proof_returns_true() {
+        let (env, client, admin) = setup();
+        let payment_id = BytesN::from_array(&env, &[1u8; 32]);
+        let sibling = BytesN::from_array(&env, &[2u8; 32]);
+
+        let leaf = ReconciliationContract::hash_leaf(&env, &payment_id);
+        let root = ReconciliationContract::hash_pair(&env, &leaf, &sibling);
+        client.submit_merkle_root(&admin, &root);
+
+        let mut proof: Vec<MerkleProofNode> = Vec::new(&env);
+        proof.push_back(MerkleProofNode { sibling, is_left: false });
+
+        assert!(client.verify_settlement(&payment_id, &proof));
+    }
+
+    #[test]
+    fn test_verify_settlement_invalid_proof_returns_false() {
+        let (env, client, admin) = setup();
+        let payment_id = BytesN::from_array(&env, &[1u8; 32]);
+        let sibling = BytesN::from_array(&env, &[2u8; 32]);
+
+        let leaf = ReconciliationContract::hash_leaf(&env, &payment_id);
+        let root = ReconciliationContract::hash_pair(&env, &leaf, &sibling);
+        client.submit_merkle_root(&admin, &root);
+
+        // Wrong sibling produces a mismatched root.
+        let wrong_sibling = BytesN::from_array(&env, &[9u8; 32]);
+        let mut proof: Vec<MerkleProofNode> = Vec::new(&env);
+        proof.push_back(MerkleProofNode { sibling: wrong_sibling, is_left: false });
+
+        assert!(!client.verify_settlement(&payment_id, &proof));
     }
 }
