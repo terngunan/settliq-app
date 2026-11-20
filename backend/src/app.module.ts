@@ -69,7 +69,11 @@ import { RefreshToken } from './auth/refresh-token.entity';
     },
     {
       provide: APP_PIPE,
-      useValue: new ValidationPipe({ whitelist: true, transform: true }),
+      useValue: new ValidationPipe({
+        whitelist: true,
+        transform: true,
+        forbidNonWhitelisted: true,
+      }),
     },
   ],
 })
