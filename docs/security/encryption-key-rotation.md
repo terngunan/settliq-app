@@ -5,8 +5,8 @@ This project encrypts sensitive fields at rest using AES-256-GCM with
 
 ## Encrypted fields
 
-- `merchants.bankAccountNumber`
-- `blockchain_wallets.encryptedSecretKey`
+- `merchants.apiKeyHash`
+- `refresh_tokens.tokenHash`
 
 ## Rotation process
 
@@ -20,8 +20,8 @@ This project encrypts sensitive fields at rest using AES-256-GCM with
 3. **Switch active key**
    - Promote `ENCRYPTION_KEY_NEXT` to `ENCRYPTION_KEY` in all environments.
 4. **Verify**
-   - Run a smoke test that reads a sample of merchants/wallets and confirms
-     decrypt success.
+   - Run a smoke test that reads a sample of merchants and refresh tokens and
+     confirms decrypt success.
    - Check logs for `[SECURITY_EVENT] Failed to decrypt`.
 5. **Retire old key**
    - Remove access to previous key material after verification window closes.
