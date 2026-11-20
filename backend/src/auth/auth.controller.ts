@@ -78,7 +78,8 @@ export class AuthController {
   @ApiOkResponse({ description: 'Password updated and reset token cleared' })
   @ApiBadRequestResponse({ description: 'Invalid or expired reset token, or validation failed' })
   @ApiTooManyRequestsResponse({ description: 'Rate limit exceeded — max 5 requests per minute' })
-  resetPassword(@Body() dto: ResetPasswordDto): Promise<{ message: string }> {
-    return this.authService.resetPassword(dto.token, dto.password);
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<{ message: string }> {
+    await this.authService.resetPassword(dto.token, dto.password);
+    return { message: 'Password has been successfully reset' };
   }
 }
