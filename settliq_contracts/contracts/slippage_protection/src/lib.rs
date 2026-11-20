@@ -243,24 +243,20 @@ impl SlippageProtectionContract {
 
     fn assert_within_tolerance(env: &Env, expected: i128, actual: i128, max_bps: u32) {
         if expected <= 0 {
-            panic!("expected must be > 0");
-        }
-        if actual <= 0 {
-            panic!("actual must be > 0");
+            panic!("expected must be positive");
         }
 
-        let diff = if actual > expected {
-            actual - expected
-        } else {
-            expected - actual
-        };
+        // Favorable price movement (actual >= expected): the trade executed at
+        // or better than the expected price. Slippage protection only guards
+        // against receiving less, so positive deviation must not revert.
+        if actual >= expected {
+            return;
+        }
 
-        // diff / expected > max_bps / 10_000
-        // => diff * 10_000 > max_bps * expected
-        let lhs = diff * 10_000;
-        let rhs = (max_bps as i128) * expected;
-
-        if lhs > rhs {
+        // Downside slippage: shortfall relative to expected, in basis points.
+        let diff = expected - actual;
+        let dev = diff * 10_000 / expected;
+        if dev > max_bps as i128 {
             env.events().publish(
                 ("SLIPPAGE_PROTECTION", "slippage_exceeded"),
                 SlippageExceededEvent {
@@ -269,7 +265,7 @@ impl SlippageProtectionContract {
                     max_bps,
                 },
             );
-            panic!("slippage exceeded");
+            panic!("slippage tolerance exceeded");
         }
     }
 }

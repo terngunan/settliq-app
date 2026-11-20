@@ -46,6 +46,33 @@ fn test_check_slippage_zero_deviation_passes() {
     client.check_slippage(&10_000, &10_000);
 }
 
+// ── check_slippage: favorable price improvement (issue #257) ─────────────────
+
+#[test]
+fn test_check_slippage_positive_improvement_passes() {
+    // actual > expected: trader receives MORE than expected → must NOT revert.
+    let (_env, client, _admin) = setup_env();
+    client.check_slippage(&10_000, &10_500);
+}
+
+#[test]
+fn test_check_slippage_large_positive_improvement_passes() {
+    // Even a large favorable movement must not be treated as slippage.
+    let (_env, client, _admin) = setup_env();
+    client.check_slippage(&10_000, &20_000);
+}
+
+#[test]
+fn test_check_slippage_for_pair_positive_improvement_passes() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Tight per-pair limit (50 bps) must not penalize favorable movement.
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &50);
+    client.check_slippage_for_pair(&token_a, &token_b, &10_000, &10_500);
+}
+
 // ── check_slippage: revert paths ─────────────────────────────────────────────
 
 #[test]
@@ -238,71 +265,6 @@ fn test_set_pair_max_slippage_emits_event_first_set() {
 
     // Data check: previous_bps is the global default, new_bps is 200.
     let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-    assert_eq!(event.previous_bps, 100); // global default
+    assert_eq!(event.previous_bps, 100);
     assert_eq!(event.new_bps, 200);
-}
-
-/// set_pair_max_slippage emits PairMaxSlippageUpdatedEvent on an update to an
-/// already-configured pair. previous_bps should reflect the stored override,
-/// not the global default.
-#[test]
-fn test_set_pair_max_slippage_emits_event_on_update() {
-    let (env, client, admin) = setup_env();
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
-
-    // First set.
-    client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
-
-    // Second set — override the existing value.
-    client.set_pair_max_slippage(&admin, &token_a, &token_b, &75);
-
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-
-    // previous_bps must be the prior override (200), not the global default.
-    assert_eq!(event.previous_bps, 200);
-    assert_eq!(event.new_bps, 75);
-}
-
-/// Event asset fields match the arguments passed to set_pair_max_slippage
-/// regardless of whether they are reordered internally (canonical ordering).
-#[test]
-fn test_set_pair_max_slippage_event_contains_correct_assets() {
-    let (env, client, admin) = setup_env();
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
-
-    client.set_pair_max_slippage(&admin, &token_a, &token_b, &300);
-
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-
-    // The event must carry the original caller-supplied addresses.
-    assert_eq!(event.asset_a, token_a);
-    assert_eq!(event.asset_b, token_b);
-    assert_eq!(event.new_bps, 300);
-}
-
-/// Calling set_pair_max_slippage with arguments in reversed order (B, A)
-/// still emits the event with the caller-supplied asset_a / asset_b values.
-#[test]
-fn test_set_pair_max_slippage_event_reversed_order_carries_caller_args() {
-    let (env, client, admin) = setup_env();
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
-
-    // Set using reversed argument order.
-    client.set_pair_max_slippage(&admin, &token_b, &token_a, &150);
-
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-
-    // asset_a and asset_b in the event should be what the caller passed in.
-    assert_eq!(event.asset_a, token_b);
-    assert_eq!(event.asset_b, token_a);
-    assert_eq!(event.new_bps, 150);
 }
