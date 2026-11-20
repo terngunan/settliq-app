@@ -225,7 +225,7 @@ impl MultisigAdminContract {
         proposal.rejected = true;
         env.events().publish(
             ("MULTISIG", "proposal_rejected"),
-            ProposalRejectedEvent { proposal_id },
+            ProposalRejectedEvent { proposal_id, rejecter: caller },
         );
         env.storage().persistent().set(&key, &proposal);
     }
@@ -367,7 +367,7 @@ impl MultisigAdminContract {
         Address::from_string_bytes(args)
     }
 
-    fn decode_u32(env: &Env, args: &Bytes) -> u32 {
+    fn decode_u32(_env: &Env, args: &Bytes) -> u32 {
         let mut buf = [0u8; 4];
         if args.len() != 4 {
             panic!("invalid u32 args");
