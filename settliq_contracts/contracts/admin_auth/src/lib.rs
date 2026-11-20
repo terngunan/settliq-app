@@ -4,6 +4,13 @@ mod test;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
 
+/// Number of ledgers below which a persistent admin entry is considered
+/// close to expiry and should be bumped. ~30 days at 5s/ledger.
+pub const TTL_THRESHOLD_LEDGERS: u32 = 518_400;
+/// Number of ledgers to extend a persistent admin entry to when bumped.
+/// ~60 days at 5s/ledger.
+pub const TTL_BUMP_LEDGERS: u32 = 1_036_800;
+
 /// Admin roles. Admin accounts are stored separately from merchant accounts
 /// as a deployment convention — the contract itself does not cross-check
 /// against a merchant registry, so the separation is upheld by the caller
@@ -93,6 +100,7 @@ impl AdminAuthContract {
         env.storage()
             .persistent()
             .set(&DataKey::AdminAt(0), &super_admin);
+        Self::extend_admin_at_ttl(&env, 0);
         env.storage().instance().set(&DataKey::AdminCount, &1u32);
     }
 
@@ -141,6 +149,7 @@ impl AdminAuthContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::AdminAt(count), &admin.clone());
+            Self::extend_admin_at_ttl(&env, count);
             env.storage()
                 .instance()
                 .set(&DataKey::AdminCount, &(count + 1));
@@ -205,6 +214,7 @@ impl AdminAuthContract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::AdminAt(slot), &last_addr);
+                Self::extend_admin_at_ttl(&env, slot);
             }
             env.storage().persistent().remove(&DataKey::AdminAt(last));
             env.storage()
@@ -243,164 +253,6 @@ impl AdminAuthContract {
             },
         );
 
-        // Ensure the new super admin has an AdminUser record with SuperAdmin role
-        let is_new = !env.storage().persistent().has(&DataKey::Admin(new_super_admin.clone()));
-        Self::save(
-            &env,
-            AdminUser {
-                admin: new_super_admin.clone(),
-                role: AdminRole::SuperAdmin,
-                active: true,
-            },
-        );
-        if is_new {
-            let count: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::AdminCount)
-                .unwrap_or(0);
-            env.storage()
-                .persistent()
-                .set(&DataKey::AdminAt(count), &new_super_admin.clone());
-            env.storage()
-                .instance()
-                .set(&DataKey::AdminCount, &(count + 1));
-        }
+        //
 
-        env.events().publish(
-            ("ADMIN_AUTH", "super_admin_transferred"),
-            SuperAdminTransferredEvent {
-                previous,
-                new: new_super_admin,
-            },
-        );
-    }
-
-    /// Deactivate an admin without removing its credential record. SuperAdmin
-    /// only. `is_admin` returns false for a deactivated admin.
-    ///
-    /// The SuperAdmin cannot deactivate themselves: doing so would cause
-    /// `authorize(super_admin)` to fail and lock out all SuperAdmin-gated
-    /// operations (#12).
-    pub fn deactivate_admin(env: Env, caller: Address, admin: Address) {
-        caller.require_auth();
-        Self::require_super_admin(&env, &caller);
-
-        // Prevent the SuperAdmin from deactivating themselves (#12).
-        let super_admin: Address = env.storage().instance().get(&DataKey::SuperAdmin).unwrap();
-        if admin == super_admin {
-            panic!("cannot deactivate super admin");
-        }
-
-        let key = DataKey::Admin(admin.clone());
-        let mut user: AdminUser = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic!("admin not found"));
-
-        // Check idempotency: only emit event and persist if actually changing state (#84)
-        if !user.active {
-            return;
-        }
-
-        user.active = false;
-        Self::save(&env, user);
-        env.events().publish(
-            ("ADMIN_AUTH", "admin_deactivated"),
-            AdminDeactivatedEvent { admin },
-        );
-    }
-
-    /// Reactivate a deactivated admin account. SuperAdmin only. (#92)
-    pub fn reactivate_admin(env: Env, caller: Address, admin: Address) {
-        caller.require_auth();
-        Self::require_super_admin(&env, &caller);
-
-        let key = DataKey::Admin(admin.clone());
-        let mut user: AdminUser = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic!("admin not found"));
-
-        if user.active {
-            panic!("admin is already active");
-        }
-
-        user.active = true;
-        Self::save(&env, user);
-        env.events().publish(
-            ("ADMIN_AUTH", "admin_reactivated"),
-            AdminReactivatedEvent { admin },
-        );
-    }
-
-    pub fn get_admin(env: Env, admin: Address) -> Option<AdminUser> {
-        env.storage().persistent().get(&DataKey::Admin(admin))
-    }
-
-    /// True when the address is an active admin in the store.
-    pub fn is_admin(env: Env, admin: Address) -> bool {
-        match env.storage().persistent().get::<DataKey, AdminUser>(&DataKey::Admin(admin)) {
-            Some(user) => user.active,
-            None => false,
-        }
-    }
-
-    /// Authorization gate for admin-only operations. Rejects any non-admin
-    /// address (including merchants), mirroring "require admin JWT on admin routes".
-    pub fn authorize(env: Env, caller: Address) {
-        caller.require_auth();
-        if !Self::is_admin(env.clone(), caller) {
-            panic!("unauthorized admin");
-        }
-    }
-
-    /// Paginated list of current admin addresses (#1044).
-    /// Returns up to `page_size` entries starting at `offset`.
-    /// Reads are bounded by `page_size`; the full roster is never loaded.
-    pub fn list_admins(env: Env, offset: u32, page_size: u32) -> Vec<Address> {
-        let count: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AdminCount)
-            .unwrap_or(0);
-        let start = offset.min(count);
-        // Saturate addition to prevent overflow panic (#83)
-        let end = start.saturating_add(page_size).min(count);
-        let mut page: Vec<Address> = Vec::new(&env);
-        for i in start..end {
-            if let Some(addr) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Address>(&DataKey::AdminAt(i))
-            {
-                page.push_back(addr);
-            }
-        }
-        page
-    }
-
-    /// Total number of admin slots currently allocated.
-    pub fn admin_count(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::AdminCount)
-            .unwrap_or(0)
-    }
-
-    fn save(env: &Env, user: AdminUser) {
-        // Use persistent() storage so each admin entry has its own TTL (#1043)
-        env.storage()
-            .persistent()
-            .set(&DataKey::Admin(user.admin.clone()), &user);
-    }
-
-    fn require_super_admin(env: &Env, caller: &Address) {
-        let super_admin: Address = env.storage().instance().get(&DataKey::SuperAdmin).unwrap();
-        if caller != &super_admin {
-            panic!("not super admin");
-        }
-    }
-}
+/* … truncated 5490 chars — edit only what you need near the top … */
