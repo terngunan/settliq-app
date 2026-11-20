@@ -124,11 +124,11 @@ impl PlatformStatsContract {
             let vol: i128 = env
                 .storage()
                 .instance()
-                .get(&DataKey::TotalSettledVolumeUsd)
+                .get(&DataKey::TotalSettledVolume)
                 .unwrap();
             env.storage()
                 .instance()
-                .set(&DataKey::TotalSettledVolumeUsd, &(vol + amount_usd));
+                .set(&DataKey::TotalSettledVolume, &(vol + amount_usd));
         }
 
         let total_payments: u32 = env
@@ -259,17 +259,6 @@ impl PlatformStatsContract {
         let count = match env
             .storage()
             .instance()
-            .get::<DataKey, ActiveBucket>(&DataKey::ActiveBucket)
-        {
-            Some(active) if active.bucket == bucket => active.count.saturating_add(1),
-            _ => 1,
-        };
-        env.storage()
-            .instance()
-            .set(&DataKey::ActiveBucket, &ActiveBucket { bucket, count });
-        count
-    }
-}
+    
 
-#[cfg(test)]
-mod test;
+/* … truncated 357 chars — edit only what you need near the top … */
