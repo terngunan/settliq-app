@@ -28,7 +28,7 @@ workflow:
 
 | Variable (per-network prefix) | Used by | Example |
 | --- | --- | --- |
-| `…_DEPLOY_ADMIN` | `admin_timelock`, `merchant_registry`, `reconciliation`, `settlement_ledger`, `slippage_protection`, `stellar_confirmations`, `fee_calculator`, `fee_distributor`, `payment_escrow` | `GA…` |
+| `…_DEPLOY_ADMIN` | `admin_timelock`, `merchant_registry`, `reconciliation`, `settlement_ledger`, `slippage_protection`, `stellar_confirmations`, `fee_calculator`, `fee_distributor`, `payment_escrow`, `batch_payments`, `liquidity_router` | `GA…` |
 | `…_RBAC_SUPER_ADMIN` | `rbac_access` (`super_admin`) | `GA…` |
 | `…_XLM_TOKEN` | `payment_escrow` | `CA…` |
 | `…_USDC_TOKEN` | `payment_escrow`, `fee_distributor` | `CA…` |
@@ -42,6 +42,9 @@ workflow:
 | `…_EMERGENCY_TREASURY` | `payment_escrow` | `GA…` |
 | `…_EMERGENCY_COOLDOWN_LEDGERS` | `payment_escrow` | `17280` |
 | `…_CONFIRMATION_COUNT` | `stellar_confirmations` | `3` |
+| `…_BATCH_MAX_BATCH_SIZE` | `batch_payments` (`max_batch_size`) | `100` |
+| `…_BATCH_MAX_AMOUNT_PER_PAYMENT` | `batch_payments` (`max_amount_per_payment`) | `1000000000` |
+| `…_BATCH_MAX_TOTAL_BATCH_AMOUNT` | `batch_payments` (`max_total_batch_amount`) | `10000000000` |
 
 ### Optional
 
@@ -69,10 +72,19 @@ Two constructors take container types, which the Stellar CLI expects as JSON.
 ]
 ```
 
+## Contracts with constructor arguments
+
+`batch_payments` takes five constructor arguments: `admin` (from
+`…_DEPLOY_ADMIN`), `max_batch_size` (`…_BATCH_MAX_BATCH_SIZE`),
+`max_amount_per_payment` (`…_BATCH_MAX_AMOUNT_PER_PAYMENT`) and
+`max_total_batch_amount` (`…_BATCH_MAX_TOTAL_BATCH_AMOUNT`).
+
+`liquidity_router` takes a single `admin` argument, supplied from
+`…_DEPLOY_ADMIN`.
+
 ## Contracts with no constructor
 
-`batch_payments`, `liquidity_router` and `payment_request` take no constructor
-arguments and need no configuration.
+`payment_request` takes no constructor arguments and needs no configuration.
 
 ## Deploy order
 
