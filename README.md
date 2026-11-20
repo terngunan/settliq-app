@@ -85,3 +85,6 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 
 <!-- handsoff-issue-106 -->
 - #106: merchant_registry: Unbounded page_size parameter in merchants query risks gas budget exhaustion
+
+<!-- handsoff-issue-241 -->
+- #241: [Smart Contract] platform_stats: stats function references undeclared identifiers total_merchants and non-existent current_active
