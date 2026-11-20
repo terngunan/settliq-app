@@ -117,6 +117,19 @@ pub struct PaymentEscrowContractUpdatedEvent {
     pub new_value: Option<Address>,
 }
 
+// ── TTL constants (issue #260) ──────────────────────────────────────────────
+//
+// Payment confirmation records live in persistent storage and are subject to
+// Soroban rent reclamation. Slow on-chain confirmation or network delays can
+// leave a payment in-flight for many ledgers, so we bump the entry's TTL on
+// every write and read to keep the record alive until it reaches its required
+// confirmation threshold (or a terminal state).
+
+/// Minimum remaining TTL (in ledgers) we want on a PaymentState entry.
+const PAYMENT_STATE_TTL_THRESHOLD: u32 = 100_000;
+/// TTL (in ledgers) we extend a PaymentState entry to when below threshold.
+const PAYMENT_STATE_TTL_EXTEND_TO: u32 = 500_000;
+
 // ── contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -207,21 +220,20 @@ impl StellarConfirmationsContract {
 
         // Snapshot the required confirmation count at first confirmation so
         // later admin changes to the global ConfirmationCount don't retroactively
-        // move the threshold for payments already accumulating confirmations.
-        let required: u32 = if state.required_confs == 0 {
-            let current: u32 =
-                env.storage().instance().get(&DataKey::ConfirmationCount).unwrap();
-            state.required_confs = current;
-            current
-        } else {
-            state.required_confs
-        };
+        // affect in-flight payments.
+        if state.required_confs == 0 {
+            state.required_confs = Self::required_confs(&env);
+        }
 
-        // Save consolidated payment state (issue #74)
+        let required = state.required_confs;
+
+        // Persist the updated state and extend its TTL so in-flight payments
+        // are not pruned by rent reclamation before reaching the threshold
+        // (issue #260).
         Self::save_payment_state(&env, &payment_id, &state);
 
         env.events().publish(
-            ("STELLAR_CONFS", "confirmation_recorded"),
+            (soroban_sdk::symbol_short!("conf_rec"), payment_id.clone()),
             ConfirmationRecordedEvent {
                 payment_id: payment_id.clone(),
                 ledger_seq,
@@ -230,6 +242,77 @@ impl StellarConfirmationsContract {
             },
         );
 
-        // Transition to Set
+        if new_confs >= required {
+            state.settling = true;
+            Self::save_payment_state(&env, &payment_id, &state);
 
-/* … truncated 5995 chars — edit only what you need near the top … */
+            env.events().publish(
+                (soroban_sdk::symbol_short!("settle_auth"), payment_id.clone()),
+                SettlementAuthorisedEvent {
+                    payment_id: payment_id.clone(),
+                    ledger_seq,
+                    amount,
+                    merchant,
+                },
+            );
+        }
+
+        new_confs
+    }
+
+    /// Returns the current confirmation count for `payment_id`.
+    /// Extends the TTL of the payment state entry on read so status checks
+    /// keep in-flight records alive (issue #260).
+    pub fn get_confirmations(env: Env, payment_id: BytesN<32>) -> u32 {
+        Self::load_payment_state(&env, &payment_id).confs
+    }
+
+    /// Returns the full consolidated confirmation state for `payment_id`.
+    /// Extends the TTL of the payment state entry on read (issue #260).
+    pub fn get_payment_state(env: Env, payment_id: BytesN<32>) -> PaymentConfirmationState {
+        Self::load_payment_state(&env, &payment_id)
+    }
+
+    // ── internal helpers ────────────────────────────────────────────────────
+
+    fn require_admin(env: &Env, caller: &Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("admin not set");
+        assert!(*caller == admin, "caller is not admin");
+    }
+
+    fn required_confs(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ConfirmationCount)
+            .expect("confirmation count not set")
+    }
+
+    /// Loads the consolidated payment state, extending its TTL if present so
+    /// in-flight records are protected from archival (issue #260).
+    fn load_payment_state(env: &Env, payment_id: &BytesN<32>) -> PaymentConfirmationState {
+        let key = DataKey::PaymentState(payment_id.clone());
+        let storage = env.storage().persistent();
+        if storage.has(&key) {
+            storage.extend_ttl(&key, PAYMENT_STATE_TTL_THRESHOLD, PAYMENT_STATE_TTL_EXTEND_TO);
+            storage.get(&key).expect("payment state missing")
+        } else {
+            PaymentConfirmationState {
+                confs: 0,
+                first_ledger: 0,
+                last_ledger: 0,
+                required_confs: 0,
+                settling: false,
+                failed: false,
+            }
+        }
+    }
+
+    /// Persists the consolidated payment state and extends its TTL so the
+    /// record survives until the payment reaches a terminal state (issue #260).
+    fn save_payment_state(env: &Env, payment_id: &BytesN<32>, state: &PaymentConfirmationState) {
+        let key = DataKey::PaymentState(payment_id.clone());
+        let storage = env.storage().persistent();
+        storage.set(&key, state);
+        storage.extend_ttl(&key, PAYMENT_STATE_TTL_THRESHOLD, PAYMENT_STATE_TTL_EXTEND_TO);
+    }
+}
