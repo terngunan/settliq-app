@@ -99,6 +99,11 @@ impl SettlementLedgerContract {
     pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+        assert!(new_admin != caller, "cannot transfer to self");
+        assert!(
+            new_admin != env.current_contract_address(),
+            "cannot transfer to contract address"
+        );
         let old_admin: Address = env
             .storage()
             .instance()
@@ -226,84 +231,6 @@ impl SettlementLedgerContract {
     pub fn get_settlement(env: Env, payment_id: BytesN<32>) -> SettlementRecord {
         let key = DataKey::Settlement(payment_id);
         let record: SettlementRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("settlement not found");
-        Self::bump_ttl(&env, &key);
-        record
-    }
+            .s
 
-    /// Number of settlements recorded for a merchant. Returns 0 when the
-    /// merchant has no settlements yet.
-    pub fn get_merchant_settlement_count(env: Env, merchant: Address) -> u32 {
-        let key = DataKey::MerchantCount(merchant);
-        let count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-        if count > 0 {
-            Self::bump_ttl(&env, &key);
-        }
-        count
-    }
-
-    /// One bounded page of settlement IDs for a merchant. Returns an empty
-    /// vector when the page has no entries.
-    pub fn get_merchant_settlement_page(
-        env: Env,
-        merchant: Address,
-        page: u32,
-    ) -> Vec<BytesN<32>> {
-        let key = DataKey::MerchantPage(merchant, page);
-        let ids: Vec<BytesN<32>> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| vec![&env]);
-        if !ids.is_empty() {
-            Self::bump_ttl(&env, &key);
-        }
-        ids
-    }
-
-    /// Total number of settlements recorded platform-wide. Returns 0 when no
-    /// settlements have been recorded.
-    pub fn get_total_settlement_count(env: Env) -> u32 {
-        let key = DataKey::TotalCount;
-        let count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-        if count > 0 {
-            Self::bump_ttl(&env, &key);
-        }
-        count
-    }
-
-    /// One bounded page of platform-wide settlement IDs. Returns an empty
-    /// vector when the page has no entries.
-    pub fn get_all_settlement_page(env: Env, page: u32) -> Vec<BytesN<32>> {
-        let key = DataKey::AllPage(page);
-        let ids: Vec<BytesN<32>> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| vec![&env]);
-        if !ids.is_empty() {
-            Self::bump_ttl(&env, &key);
-        }
-        ids
-    }
-
-    // ── internal helpers ─────────────────────────────────────────────────────
-
-    fn require_admin(env: &Env, caller: &Address) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin not set");
-        assert!(caller == &admin, "caller is not admin");
-    }
-
-    fn bump_ttl(env: &Env, key: &DataKey) {
-        env.storage()
-            .persistent()
-            .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
-    }
-}
+/* … truncated 2527 chars — edit only what you need near the top … */
