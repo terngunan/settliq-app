@@ -234,68 +234,60 @@ impl SettlementLedgerContract {
         record
     }
 
-    /// Returns `true` if the settlement identified by `payment_id` has been
-    /// voided, `false` otherwise. Callable by anyone.
-    pub fn is_voided(env: Env, payment_id: BytesN<32>) -> bool {
-        let key = DataKey::Void(payment_id);
-        let exists = env.storage().persistent().has(&key);
-        if exists {
+    /// Number of settlements recorded for a merchant. Returns 0 when the
+    /// merchant has no settlements yet.
+    pub fn get_merchant_settlement_count(env: Env, merchant: Address) -> u32 {
+        let key = DataKey::MerchantCount(merchant);
+        let count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+        if count > 0 {
             Self::bump_ttl(&env, &key);
         }
-        exists
+        count
     }
 
-    /// Returns the void details (reason and timestamp) for a settlement, or
-    /// `None` if the settlement has not been voided. Callable by anyone.
-    pub fn get_void(env: Env, payment_id: BytesN<32>) -> Option<SettlementVoid> {
-        let key = DataKey::Void(payment_id);
-        let void: Option<SettlementVoid> = env.storage().persistent().get(&key);
-        if void.is_some() {
-            Self::bump_ttl(&env, &key);
-        }
-        void
-    }
-
-    /// Mark a settlement as voided without mutating the original record.
-    /// Admin-only. Panics if the settlement does not exist or is already voided.
-    pub fn void_settlement(
+    /// One bounded page of settlement IDs for a merchant. Returns an empty
+    /// vector when the page has no entries.
+    pub fn get_merchant_settlement_page(
         env: Env,
-        caller: Address,
-        payment_id: BytesN<32>,
-        reason: String,
-    ) {
-        caller.require_auth();
-        Self::require_admin(&env, &caller);
+        merchant: Address,
+        page: u32,
+    ) -> Vec<BytesN<32>> {
+        let key = DataKey::MerchantPage(merchant, page);
+        let ids: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| vec![&env]);
+        if !ids.is_empty() {
+            Self::bump_ttl(&env, &key);
+        }
+        ids
+    }
 
-        let settlement_key = DataKey::Settlement(payment_id.clone());
-        assert!(
-            env.storage().persistent().has(&settlement_key),
-            "settlement not found"
-        );
+    /// Total number of settlements recorded platform-wide. Returns 0 when no
+    /// settlements have been recorded.
+    pub fn get_total_settlement_count(env: Env) -> u32 {
+        let key = DataKey::TotalCount;
+        let count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+        if count > 0 {
+            Self::bump_ttl(&env, &key);
+        }
+        count
+    }
 
-        let void_key = DataKey::Void(payment_id.clone());
-        assert!(
-            !env.storage().persistent().has(&void_key),
-            "settlement already voided"
-        );
-
-        let voided_at = env.ledger().timestamp();
-        let void = SettlementVoid {
-            payment_id: payment_id.clone(),
-            reason: reason.clone(),
-            voided_at,
-        };
-        env.storage().persistent().set(&void_key, &void);
-        Self::bump_ttl(&env, &void_key);
-
-        env.events().publish(
-            ("SETTLEMENT_LEDGER", "settlement_voided"),
-            SettlementVoidedEvent {
-                payment_id,
-                reason,
-                voided_at,
-            },
-        );
+    /// One bounded page of platform-wide settlement IDs. Returns an empty
+    /// vector when the page has no entries.
+    pub fn get_all_settlement_page(env: Env, page: u32) -> Vec<BytesN<32>> {
+        let key = DataKey::AllPage(page);
+        let ids: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| vec![&env]);
+        if !ids.is_empty() {
+            Self::bump_ttl(&env, &key);
+        }
+        ids
     }
 
     // ── internal helpers ─────────────────────────────────────────────────────
