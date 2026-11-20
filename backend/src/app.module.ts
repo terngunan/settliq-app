@@ -49,7 +49,10 @@ import { RefreshToken } from './auth/refresh-token.entity';
           type: 'postgres',
           url: config.get<string>('DATABASE_URL'),
           entities: [Merchant, WaitlistEntry],
-          synchronize: !isProd,
+          // Schema sync is opt-in only (#127). Never derive this from
+          // NODE_ENV: staging/preview/test/unset must rely on migrations so
+          // TypeORM cannot silently drop columns on boot.
+          synchronize: config.get<string>('DB_SYNCHRONIZE') === 'true',
           ssl,
         };
       },
