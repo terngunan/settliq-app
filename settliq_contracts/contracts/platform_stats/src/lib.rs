@@ -101,6 +101,20 @@ impl PlatformStatsContract {
         }
     }
 
+    fn health(env: &Env) -> HealthStatus {
+        let partner_ok: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::PartnerOk)
+            .unwrap_or(true);
+
+        HealthStatus {
+            storage_ok: true,
+            stellar_ok: true,
+            partner_ok,
+        }
+    }
+
     pub fn record_merchant(env: Env, _caller: Address) {
         Self::require_admin(&env);
         let tm: u32 = env.storage().instance().get(&DataKey::TotalMerchants).unwrap();
@@ -193,22 +207,13 @@ impl PlatformStatsContract {
             .instance()
             .get(&DataKey::TotalSettledVolumeUsd)
             .unwrap_or(0);
-        let partner_ok: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::PartnerOk)
-            .unwrap_or(true);
 
         PlatformStats {
             total_merchants,
             total_payments,
             total_settled_volume_usd,
             active_payments_24h: Self::active_count(&env),
-            health: HealthStatus {
-                storage_ok: true,
-                stellar_ok: true,
-                partner_ok,
-            },
+            health: Self::health(&env),
         }
     }
 }
