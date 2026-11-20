@@ -85,3 +85,6 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 
 <!-- handsoff-issue-106 -->
 - #106: merchant_registry: Unbounded page_size parameter in merchants query risks gas budget exhaustion
+
+<!-- handsoff-issue-249 -->
+- #249: [Smart Contract] payment_escrow: resolve_dispute and resolve_dispute_split lack require_not_paused checks allowing fund drainage during emergency pause
