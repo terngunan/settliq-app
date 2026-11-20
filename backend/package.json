@@ -10,7 +10,10 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
     "test": "jest",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "migration:run": "typeorm migration:run -d dist/data-source.js",
+    "migration:revert": "typeorm migration:revert -d dist/data-source.js",
+    "migration:generate": "typeorm migration:generate -d dist/data-source.js"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
