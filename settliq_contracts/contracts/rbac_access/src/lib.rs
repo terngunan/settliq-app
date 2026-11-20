@@ -6,6 +6,18 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env,
 };
 
+// ── TTL management (Issue #245) ─────────────────────────────────────────────
+//
+// Persistent storage entries expire and are archived if their TTL is not
+// extended. Role assignments and the SuperAdminCount counter must be kept
+// alive, otherwise administrator access controls would silently expire.
+//
+// `PERSISTENT_TTL_THRESHOLD`: if the remaining TTL is below this value, the
+// entry is extended. `PERSISTENT_TTL_EXTEND_TO`: the TTL the entry is bumped
+// to when extended.
+const PERSISTENT_TTL_THRESHOLD: u32 = 100_000;
+const PERSISTENT_TTL_EXTEND_TO: u32 = 500_000;
+
 // ── Role ────────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -52,6 +64,10 @@ impl RbacAccessContract {
         env.storage()
             .persistent()
             .set(&DataKey::SuperAdminCount, &1u32);
+
+        // Issue #245: extend TTL for the entries created during init.
+        Self::extend_role_ttl(&env, &super_admin);
+        Self::extend_super_admin_count_ttl(&env);
     }
 
     pub fn grant_role(env: Env, caller: Address, account: Address, role: Role) {
@@ -94,6 +110,9 @@ impl RbacAccessContract {
             .persistent()
             .set(&DataKey::Role(account.clone()), &role);
 
+        // Issue #245: extend TTL for the role entry we just wrote.
+        Self::extend_role_ttl(&env, &account);
+
         // Issue #13: increment count when any account (new or pre-existing) becomes SuperAdmin.
         if is_becoming_super_admin {
             let count: u32 = env
@@ -104,6 +123,8 @@ impl RbacAccessContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::SuperAdminCount, &(count + 1));
+            // Issue #245: extend TTL for the updated counter.
+            Self::extend_super_admin_count_ttl(&env);
         }
 
         // Issue #14: decrement count when an existing SuperAdmin is demoted.
@@ -119,6 +140,8 @@ impl RbacAccessContract {
                     &DataKey::SuperAdminCount,
                     &count.checked_sub(1).expect("SuperAdminCount underflow"),
                 );
+            // Issue #245: extend TTL for the updated counter.
+            Self::extend_super_admin_count_ttl(&env);
         }
 
         env.events().publish(
@@ -165,6 +188,8 @@ impl RbacAccessContract {
                     &DataKey::SuperAdminCount,
                     &count.checked_sub(1).expect("SuperAdminCount underflow"),
                 );
+            // Issue #245: extend TTL for the updated counter.
+            Self::extend_super_admin_count_ttl(&env);
         }
 
         env.storage().persistent().remove(&key);
@@ -178,7 +203,13 @@ impl RbacAccessContract {
     }
 
     pub fn get_role(env: Env, account: Address) -> Option<Role> {
-        env.storage().persistent().get(&DataKey::Role(account))
+        let key = DataKey::Role(account.clone());
+        let role: Option<Role> = env.storage().persistent().get(&key);
+        // Issue #245: extend TTL when the role entry is accessed.
+        if role.is_some() {
+            Self::extend_role_ttl(&env, &account);
+        }
+        role
     }
 
     /// Sensitive operation requiring `OperationsAdmin` (or `SuperAdmin`).
@@ -236,25 +267,16 @@ impl RbacAccessContract {
             panic!("already super admin");
         }
 
-        // `require_role` above already guarantees the caller has an assigned
-        // role record, so no separate existence check is needed here.
-        let caller_key = DataKey::Role(caller.clone());
+        // `require_role` above already guarantees the caller is a SuperAdmin.
         env.storage()
             .persistent()
             .set(&DataKey::Role(new_admin.clone()), &Role::SuperAdmin);
-        env.storage().persistent().remove(&caller_key);
-
-        // Issue #244: the caller loses SuperAdmin and new_admin gains it, so the
-        // net SuperAdmin count is unchanged. Keep the stored count consistent
-        // with the actual number of SuperAdmin holders.
-        let count: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SuperAdminCount)
-            .unwrap_or(0);
         env.storage()
             .persistent()
-            .set(&DataKey::SuperAdminCount, &count);
+            .remove(&DataKey::Role(caller.clone()));
+
+        // Issue #245: extend TTL for the newly assigned role entry.
+        Self::extend_role_ttl(&env, &new_admin);
 
         env.events().publish(
             ("RBAC", "super_admin_transferred"),
@@ -266,6 +288,32 @@ impl RbacAccessContract {
         );
     }
 
+    // ── Internal helpers ────────────────────────────────────────────────────
+
+    /// Issue #245: extend the TTL of a role entry if it is below the threshold.
+    fn extend_role_ttl(env: &Env, account: &Address) {
+        let key = DataKey::Role(account.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+    }
+
+    /// Issue #245: extend the TTL of the SuperAdminCount entry if it exists.
+    fn extend_super_admin_count_ttl(env: &Env) {
+        let key = DataKey::SuperAdminCount;
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+    }
+
     fn require_role(env: &Env, account: &Address, required: Role) {
         let role: Role = env
             .storage()
@@ -273,19 +321,22 @@ impl RbacAccessContract {
             .get(&DataKey::Role(account.clone()))
             .expect("role not assigned");
 
+        // Issue #245: extend TTL when the role entry is accessed for gating.
+        Self::extend_role_ttl(env, account);
+
         let ok = match required {
-            Role::SuperAdmin => role == Role::SuperAdmin,
-            Role::OperationsAdmin => {
-                role == Role::OperationsAdmin || role == Role::SuperAdmin
-            }
+            Role::ReadOnly => true,
             Role::ComplianceAdmin => {
                 role == Role::ComplianceAdmin || role == Role::SuperAdmin
             }
-            Role::ReadOnly => true,
+            Role::OperationsAdmin => {
+                role == Role::OperationsAdmin || role == Role::SuperAdmin
+            }
+            Role::SuperAdmin => role == Role::SuperAdmin,
         };
 
         if !ok {
-            panic!("insufficient role");
+            panic!("unauthorized: insufficient role");
         }
     }
 }
