@@ -172,13 +172,6 @@ impl ReconciliationContract {
         Self::verify_against_root(&env, &batch.merkle_root, &payment_id, &proof)
     }
 
-    pub fn archive_batches(env: Env, admin: Address, upper_batch_id: u32) {
-        admin.require_auth();
-        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if stored != admin {
-            panic!("Not admin");
-        }
-
     /// Permanently archives batches with IDs below `before_batch_id`, bounded
     /// by `max_batches` so retention can be applied incrementally. Current and
     /// newer batches remain available for proof verification. The latest batch
