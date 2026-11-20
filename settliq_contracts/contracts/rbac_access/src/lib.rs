@@ -225,6 +225,17 @@ impl RbacAccessContract {
             panic!("cannot transfer to self");
         }
 
+        // Issue #244: transferring to an account that is already a SuperAdmin
+        // would remove the caller without adding a new SuperAdmin, silently
+        // desynchronizing SuperAdminCount. Reject it explicitly.
+        let new_admin_role: Option<Role> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Role(new_admin.clone()));
+        if new_admin_role == Some(Role::SuperAdmin) {
+            panic!("already super admin");
+        }
+
         // `require_role` above already guarantees the caller has an assigned
         // role record, so no separate existence check is needed here.
         let caller_key = DataKey::Role(caller.clone());
@@ -232,6 +243,18 @@ impl RbacAccessContract {
             .persistent()
             .set(&DataKey::Role(new_admin.clone()), &Role::SuperAdmin);
         env.storage().persistent().remove(&caller_key);
+
+        // Issue #244: the caller loses SuperAdmin and new_admin gains it, so the
+        // net SuperAdmin count is unchanged. Keep the stored count consistent
+        // with the actual number of SuperAdmin holders.
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SuperAdminCount)
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SuperAdminCount, &count);
 
         env.events().publish(
             ("RBAC", "super_admin_transferred"),
@@ -243,40 +266,26 @@ impl RbacAccessContract {
         );
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────────
-
-    /// Returns true if `caller_role` is authorized to perform a task that
-    /// requires `required`.
-    ///
-    /// Issue #93: Compliance and Operations are distinct functional roles and
-    /// must NOT be interchangeable. We therefore no longer use a linear scalar
-    /// rank comparison (which let `OperationsAdmin` satisfy a
-    /// `ComplianceAdmin` requirement). Instead:
-    ///   - `SuperAdmin` satisfies every requirement.
-    ///   - `ReadOnly` is the lowest tier and is satisfied by any assigned role.
-    ///   - `ComplianceAdmin` and `OperationsAdmin` are only satisfied by an
-    ///     exact role match (or `SuperAdmin`).
-    fn role_satisfies(caller_role: &Role, required: &Role) -> bool {
-        if *caller_role == Role::SuperAdmin {
-            return true;
-        }
-        match required {
-            Role::SuperAdmin => false,
-            Role::ReadOnly => true,
-            Role::ComplianceAdmin => *caller_role == Role::ComplianceAdmin,
-            Role::OperationsAdmin => *caller_role == Role::OperationsAdmin,
-        }
-    }
-
-    fn require_role(env: &Env, caller: &Address, required: Role) {
-        let caller_role: Role = env
+    fn require_role(env: &Env, account: &Address, required: Role) {
+        let role: Role = env
             .storage()
             .persistent()
-            .get(&DataKey::Role(caller.clone()))
-            .expect("caller has no assigned role");
+            .get(&DataKey::Role(account.clone()))
+            .expect("role not assigned");
 
-        if !Self::role_satisfies(&caller_role, &required) {
-            panic!("unauthorized: insufficient role");
+        let ok = match required {
+            Role::SuperAdmin => role == Role::SuperAdmin,
+            Role::OperationsAdmin => {
+                role == Role::OperationsAdmin || role == Role::SuperAdmin
+            }
+            Role::ComplianceAdmin => {
+                role == Role::ComplianceAdmin || role == Role::SuperAdmin
+            }
+            Role::ReadOnly => true,
+        };
+
+        if !ok {
+            panic!("insufficient role");
         }
     }
 }
