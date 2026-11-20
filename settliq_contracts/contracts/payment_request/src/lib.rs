@@ -44,6 +44,15 @@ pub enum DataKey {
     Payment(String),
 }
 
+/// Emitted when admin authority is rotated to a new address.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferredEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+    pub timestamp: u64,
+}
+
 #[contract]
 pub struct PaymentRequestContract;
 
@@ -95,6 +104,33 @@ impl PaymentRequestContract {
     pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
+    /// Rotate admin authority to a new address.
+    ///
+    /// Only the current admin may call this. Enables rotating the admin key to
+    /// a multisig or timelock contract if the original key is compromised or
+    /// needs to be upgraded.
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        require_admin(&env, &caller);
+
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized");
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("transferred")),
+            AdminTransferredEvent {
+                old_admin,
+                new_admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
     }
 
     /// Initialize a new payment request.
@@ -250,4 +286,6 @@ impl PaymentRequestContract {
 
     /// Mark payment as expired.
     ///
-    /// Permissionless: anyone may call this on
+    /// Pe
+
+/* … truncated 38 chars — edit only what you need near the top … */
