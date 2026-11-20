@@ -86,6 +86,13 @@ pub struct MinFeeUpdatedEvent {
     pub new_min_fee_stroops: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminTransferredEvent {
+    pub caller: Address,
+    pub new_admin: Address,
+}
+
 #[contract]
 pub struct FeeCalculatorContract;
 
@@ -96,6 +103,30 @@ impl FeeCalculatorContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::FeeTiers, &tiers);
         env.storage().instance().set(&DataKey::MinFeeStroops, &0i128);
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not initialized")
+    }
+
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        if caller == new_admin {
+            panic!("cannot transfer to self");
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            ("FEE_CALC", "admin_transferred"),
+            AdminTransferredEvent {
+                caller,
+                new_admin,
+            },
+        );
     }
 
     pub fn set_fee_tiers(env: Env, caller: Address, tiers: Vec<FeeTier>) {
@@ -265,129 +296,134 @@ impl FeeCalculatorContract {
         (fee, net, fee_bps)
     }
 
-    /// Read-only query: returns the merchant's current trailing 30-day volume.
-    ///
-    /// Volume is tracked as `VOLUME_BUCKETS` sub-windows of
-    /// `LEDGERS_PER_BUCKET` ledgers each. Buckets older than the trailing
-    /// 30-day span are excluded from the returned total, so the value decays
-    /// one bucket at a time instead of resetting to zero at a single boundary.
-    /// This is computed in memory and not persisted; persistence happens in
-    /// `update_and_get_volume` during `calculate_fee`.
-    pub fn get_merchant_volume(env: Env, merchant: Address) -> MerchantVolume {
-        let current_ledger = env.ledger().sequence();
-        let key = DataKey::MerchantVolume(merchant);
-        let data = env
-            .storage()
-            .persistent()
-            .get::<DataKey, MerchantVolume>(&key)
-            .unwrap_or(MerchantVolume {
-                window_start_ledger: current_ledger,
-                volume_usdc: 0,
-            });
-
-        if current_ledger.saturating_sub(data.window_start_ledger) >= LEDGERS_PER_30_DAYS {
-            MerchantVolume {
-                window_start_ledger: current_ledger,
-                volume_usdc: 0,
-            }
-        } else {
-            data
-        }
-    }
-
     fn require_admin(env: &Env, caller: &Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not initialized");
         if &admin != caller {
-            panic!("Not admin");
+            panic!("unauthorized: caller is not admin");
         }
     }
 
     fn require_authorized_caller(env: &Env, caller: &Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if caller == &admin {
-            return;
-        }
-        if let Some(settlement_caller) = env
+        let settlement_caller: Address = env
             .storage()
             .instance()
-            .get::<DataKey, Address>(&DataKey::SettlementCaller)
-        {
-            if caller == &settlement_caller {
-                return;
-            }
+            .get(&DataKey::SettlementCaller)
+            .expect("settlement caller not configured");
+        if &settlement_caller != caller {
+            panic!("unauthorized: caller is not settlement caller");
         }
-        panic!("Not authorized");
     }
 
     fn validate_tiers(tiers: &Vec<FeeTier>) {
-        if tiers.len() == 0 {
+        if tiers.is_empty() {
             panic!("tiers must not be empty");
         }
-
-        // First tier must start at zero to ensure all merchants (even with $0 volume)
-        // have an explicit tier assignment, preventing ambiguous fallback behavior
-        let first_tier = tiers.get(0).unwrap();
-        if first_tier.threshold_usdc != 0 {
-            panic!("first tier must have threshold_usdc == 0");
-        }
-
-        let mut prev_threshold = -1;
-        let mut prev_bps = u32::MAX;
-
-        for i in 0..tiers.len() {
-            let tier = tiers.get(i).unwrap();
-            if tier.threshold_usdc < 0 {
-                panic!("threshold must be >= 0");
-            }
+        let mut prev_threshold: i128 = -1;
+        for tier in tiers.iter() {
             if tier.threshold_usdc <= prev_threshold {
-                panic!("thresholds must be strictly ascending");
+                panic!("tiers must be strictly ascending");
             }
             if tier.fee_bps > BPS_DENOMINATOR as u32 {
-                panic!("fee_bps must be <= 10000");
-            }
-            if tier.fee_bps > prev_bps {
-                panic!("fee_bps must be non-increasing");
+                panic!("fee_bps exceeds 100%");
             }
             prev_threshold = tier.threshold_usdc;
-            prev_bps = tier.fee_bps;
         }
     }
 
     fn select_fee_bps(env: &Env, volume_usdc: i128) -> u32 {
-        let tiers = Self::get_fee_tiers(env.clone());
-        let mut selected_bps = 0u32;
-        for i in 0..tiers.len() {
-            let tier = tiers.get(i).unwrap();
+        let tiers: Vec<FeeTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeTiers)
+            .expect("tiers not initialized");
+        let mut selected: u32 = 0;
+        for tier in tiers.iter() {
             if volume_usdc >= tier.threshold_usdc {
-                selected_bps = tier.fee_bps;
+                selected = tier.fee_bps;
             } else {
                 break;
             }
         }
-        selected_bps
+        selected
+    }
+
+    fn get_merchant_volume(env: Env, merchant: Address) -> MerchantVolume {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MerchantVolume(merchant))
+            .unwrap_or(MerchantVolume {
+                window_start_ledger: env.ledger().sequence(),
+                volume_usdc: 0,
+                buckets: Vec::new(&env),
+                bucket_ledgers: Vec::new(&env),
+            })
     }
 
     fn update_and_get_volume(env: &Env, merchant: &Address, amount: i128) -> i128 {
-        let current_ledger = env.ledger().sequence();
         let key = DataKey::MerchantVolume(merchant.clone());
-
-        let mut data = env
+        let current_ledger = env.ledger().sequence();
+        let mut volume: MerchantVolume = env
             .storage()
             .persistent()
-            .get::<DataKey, MerchantVolume>(&key)
+            .get(&key)
             .unwrap_or(MerchantVolume {
                 window_start_ledger: current_ledger,
                 volume_usdc: 0,
+                buckets: Vec::new(env),
+                bucket_ledgers: Vec::new(env),
             });
 
-        if current_ledger.saturating_sub(data.window_start_ledger) >= LEDGERS_PER_30_DAYS {
-            data.window_start_ledger = current_ledger;
-            data.volume_usdc = 0;
+        // Initialize bucket ring if empty.
+        if volume.buckets.is_empty() {
+            let mut buckets = Vec::new(env);
+            let mut ledgers = Vec::new(env);
+            for _ in 0..VOLUME_BUCKETS {
+                buckets.push_back(0i128);
+                ledgers.push_back(0u32);
+            }
+            volume.buckets = buckets;
+            volume.bucket_ledgers = ledgers;
+            volume.window_start_ledger = current_ledger;
         }
 
-        Self::prune_and_sum(&env, data, current_ledger)
+        // Expire stale buckets and recompute the live total.
+        let mut total: i128 = 0;
+        let mut buckets = Vec::new(env);
+        let mut ledgers = Vec::new(env);
+        for i in 0..VOLUME_BUCKETS {
+            let bucket_volume = volume.buckets.get(i).unwrap_or(0);
+            let bucket_ledger = volume.bucket_ledgers.get(i).unwrap_or(0);
+            let expired = bucket_ledger != 0
+                && current_ledger.saturating_sub(bucket_ledger) >= LEDGERS_PER_30_DAYS;
+            if expired {
+                buckets.push_back(0i128);
+                ledgers.push_back(0u32);
+            } else {
+                buckets.push_back(bucket_volume);
+                ledgers.push_back(bucket_ledger);
+                total = total.checked_add(bucket_volume).expect("overflow");
+            }
+        }
+
+        // Write into the current bucket.
+        let bucket_index = ((current_ledger.saturating_sub(volume.window_start_ledger)
+            / LEDGERS_PER_BUCKET)
+            % VOLUME_BUCKETS) as u32;
+        let existing = buckets.get(bucket_index).unwrap_or(0);
+        let updated = existing.checked_add(amount).expect("overflow");
+        buckets.set(bucket_index, updated);
+        ledgers.set(bucket_index, current_ledger);
+        total = total.checked_add(amount).expect("overflow");
+
+        volume.volume_usdc = total;
+        volume.buckets = buckets;
+        volume.bucket_ledgers = ledgers;
+        env.storage().persistent().set(&key, &volume);
+
+        total
     }
-
-    /// Builds an empty bucket ring anchored 
-
-/* … truncated 6070 chars — edit only what you need near the top … */
+}

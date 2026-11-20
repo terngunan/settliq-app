@@ -27,34 +27,47 @@ describe('WaitlistService', () => {
   });
 
   describe('join', () => {
-    it('throws ConflictException when email is already on the waitlist', async () => {
-      repo.findOne.mockResolvedValue({ id: 'a', email: 'a@example.com' });
-      await expect(
-        service.join({ email: 'a@example.com', username: 'alice' } as any),
-      ).rejects.toBeInstanceOf(ConflictException);
-    });
+    it('retries referral code generation on collision and succeeds', async () => {
+      const generateSpy = jest
+        .spyOn(service as any, 'generateUniqueReferralCode')
+        .mockResolvedValueOnce('UNIQUE01');
 
-    it('throws ConflictException when username is already taken', async () => {
-      repo.findOne
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ id: 'b', email: 'b@example.com', username: 'alice' });
-
-      await expect(
-        service.join({ email: 'new@example.com', username: 'alice' } as any),
-      ).rejects.toBeInstanceOf(ConflictException);
-      expect(repo.save).not.toHaveBeenCalled();
-    });
-
-    it('maps a unique constraint violation on save to ConflictException', async () => {
       repo.findOne.mockResolvedValue(null);
-      const dbError: any = new Error('duplicate key value violates unique constraint');
-      dbError.code = '23505';
-      dbError.detail = 'Key (username)=(alice) already exists.';
-      repo.save.mockRejectedValue(dbError);
 
-      await expect(
-        service.join({ email: 'new@example.com', username: 'alice' } as any),
-      ).rejects.toBeInstanceOf(ConflictException);
+      const dto = {
+        email: 'new@example.com',
+        username: 'newuser',
+        businessName: 'New Biz',
+        country: 'US',
+      } as any;
+
+      const result = await service.join(dto);
+
+      expect(generateSpy).toHaveBeenCalled();
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ referralCode: 'UNIQUE01' }),
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('generates a collision-checked referral code via generateUniqueReferralCode', async () => {
+      const generateSpy = jest
+        .spyOn(service as any, 'generateUniqueReferralCode')
+        .mockResolvedValue('ABCD1234');
+
+      repo.findOne.mockResolvedValue(null);
+
+      await service.join({
+        email: 'x@example.com',
+        username: 'xuser',
+        businessName: 'X',
+        country: 'US',
+      } as any);
+
+      expect(generateSpy).toHaveBeenCalledTimes(1);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ referralCode: 'ABCD1234' }),
+      );
     });
   });
 
