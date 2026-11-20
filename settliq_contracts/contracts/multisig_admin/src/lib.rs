@@ -13,6 +13,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Bytes, Env
 /// immediately self-execute every proposal, silently defeating the entire
 /// multisig premise. If this constant is ever made configurable, the setter
 /// MUST enforce `assert!(new_threshold >= 2)`.
+const MAX_ADMINS: u32 = 10;
 const THRESHOLD: u32 = 2;
 const EXPIRY_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 
