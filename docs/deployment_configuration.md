@@ -1,6 +1,6 @@
 # Deployment configuration
 
-`.github/workflows/deploy.yml` deploys all 14 workspace contracts to testnet on
+`.github/workflows/deploy.yml` deploys all 16 workspace contracts to testnet on
 every merge to `main`, and to mainnet on a `v*` tag. Ten of those contracts take
 `__constructor` arguments, so the workflow reads them from GitHub Actions
 **variables** (Settings → Secrets and variables → Actions → Variables).
@@ -12,6 +12,17 @@ than letting an opaque CLI error surface halfway through a partial deploy.
 > Addresses and tuning values are configuration, not credentials, so they are
 > variables rather than secrets. The only secrets involved remain
 > `TESTNET_DEPLOY_SECRET` and `MAINNET_DEPLOY_SECRET`, the deployer keypairs.
+
+## Workspace contracts
+
+The `settliq_contracts` workspace contains 16 contracts, all deployed by the
+workflow:
+
+`admin_auth`, `admin_timelock`, `batch_payments`, `fee_calculator`,
+`fee_distributor`, `liquidity_router`, `merchant_registry`, `multisig_admin`,
+`payment_escrow`, `payment_request`, `platform_stats`, `rbac_access`,
+`reconciliation`, `settlement_ledger`, `slippage_protection` and
+`stellar_confirmations`.
 
 ## Required variables
 
