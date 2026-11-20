@@ -100,6 +100,12 @@ export class AuthService {
    * Validates the reset token against the stored hash, rejects missing/expired
    * tokens with 400 Bad Request, hashes the new password with bcrypt, and
    * clears the reset token and expiry so it cannot be reused.
+   *
+   * The password hash update and token invalidation are performed in a single
+   * atomic conditional UPDATE keyed on the stored token hash. Concurrent
+   * requests presenting the same token race on that row: only the first to
+   * execute the UPDATE matches the token, and every subsequent request sees
+   * zero affected rows and is rejected — preventing replay.
    */
   async resetPassword(resetToken: string, newPassword: string): Promise<void> {
     const tokenHash = this.hashToken(resetToken);
@@ -116,10 +122,26 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired password reset token');
     }
 
-    merchant.passwordHash = await bcrypt.hash(newPassword, 12);
-    merchant.passwordResetToken = null;
-    merchant.passwordResetExpiry = null;
-    await this.merchantsRepo.save(merchant);
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    // Atomic consume: only apply the new hash and clear the token when the
+    // stored token still matches. A concurrent request that already consumed
+    // the token will match zero rows here.
+    const result = await this.merchantsRepo
+      .createQueryBuilder()
+      .update(Merchant)
+      .set({
+        passwordHash,
+        passwordResetToken: null,
+        passwordResetExpiry: null,
+      })
+      .where('id = :id', { id: merchant.id })
+      .andWhere('passwordResetToken = :tokenHash', { tokenHash })
+      .execute();
+
+    if (!result.affected) {
+      throw new BadRequestException('Invalid or expired password reset token');
+    }
   }
 
   /**
@@ -217,6 +239,49 @@ export class AuthService {
 
     const merchant = await this.merchantsRepo.findOne({
       where: { apiKeyLookupHash: lookupHash },
-      wit
+      withDeleted: false,
+    });
 
-/* … truncated 2599 chars — edit only what you need near the top … */
+    if (!merchant || !merchant.apiKeyHash) return null;
+
+    const valid = await bcrypt.compare(rawKey, merchant.apiKeyHash);
+    return valid ? merchant : null;
+  }
+
+  private async issueTokenPair(merchant: Merchant): Promise<AuthTokenResponseDto> {
+    const payload = { sub: merchant.id, email: merchant.email, status: merchant.status };
+    const accessToken = this.jwtService.sign(payload);
+
+    const rawRefresh = crypto.randomBytes(48).toString('hex');
+    const tokenHash = this.hashToken(rawRefresh);
+
+    const refreshToken = this.refreshTokenRepo.create({
+      tokenHash,
+      merchant,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    });
+    await this.refreshTokenRepo.save(refreshToken);
+
+    return {
+      accessToken,
+      refreshToken: rawRefresh,
+      expiresIn: 3600,
+    };
+  }
+
+  private hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
+  private createRawApiKey(): string {
+    return `${API_KEY_PREFIX}${crypto.randomBytes(API_KEY_BYTES).toString('hex')}`;
+  }
+
+  private async hashApiKey(
+    rawKey: string,
+  ): Promise<{ apiKeyHash: string; apiKeyLookupHash: string }> {
+    const apiKeyHash = await bcrypt.hash(rawKey, 12);
+    const apiKeyLookupHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+    return { apiKeyHash, apiKeyLookupHash };
+  }
+}

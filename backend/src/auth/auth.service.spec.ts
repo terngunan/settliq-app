@@ -29,6 +29,7 @@ describe('AuthService', () => {
       findOne: jest.fn(),
       save: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
     };
     jwtService = {
       sign: jest.fn().mockReturnValue('signed-token'),
@@ -105,22 +106,27 @@ describe('AuthService', () => {
   });
 
   describe('resetPassword', () => {
-    it('hashes the new password and clears the reset token', async () => {
+    it('atomically updates the password and clears the reset token', async () => {
       const merchant = mockMerchant({
         passwordResetToken: 'valid-token',
         passwordResetExpiry: new Date(Date.now() + 60 * 60 * 1000),
       });
       repository.findOne.mockResolvedValue(merchant);
-      repository.save.mockImplementation(async (m: Merchant) => m);
+      repository.update.mockResolvedValue({ affected: 1 });
       (bcrypt.hash as jest.Mock).mockResolvedValue('new-hashed-password');
 
       await service.resetPassword('valid-token', 'newPassword123');
 
-      expect(bcrypt.hash).toHaveBeenCalledWith('newPassword123', 10);
-      expect(merchant.password).toBe('new-hashed-password');
-      expect(merchant.passwordResetToken).toBeNull();
-      expect(merchant.passwordResetExpiry).toBeNull();
-      expect(repository.save).toHaveBeenCalledWith(merchant);
+      expect(bcrypt.hash).toHaveBeenCalledWith('newPassword123', 12);
+      expect(repository.update).toHaveBeenCalledWith(
+        { id: merchant.id, passwordResetToken: 'valid-token' },
+        expect.objectContaining({
+          password: 'new-hashed-password',
+          passwordResetToken: null,
+          passwordResetExpiry: null,
+        }),
+      );
+      expect(repository.save).not.toHaveBeenCalled();
     });
 
     it('rejects an expired reset token with BadRequestException', async () => {
@@ -133,6 +139,7 @@ describe('AuthService', () => {
       await expect(
         service.resetPassword('expired-token', 'newPassword123'),
       ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repository.update).not.toHaveBeenCalled();
       expect(repository.save).not.toHaveBeenCalled();
     });
 
@@ -142,7 +149,54 @@ describe('AuthService', () => {
       await expect(
         service.resetPassword('invalid-token', 'newPassword123'),
       ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repository.update).not.toHaveBeenCalled();
       expect(repository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the conditional update affects no rows (token already consumed)', async () => {
+      const merchant = mockMerchant({
+        passwordResetToken: 'valid-token',
+        passwordResetExpiry: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      repository.findOne.mockResolvedValue(merchant);
+      repository.update.mockResolvedValue({ affected: 0 });
+      (bcrypt.hash as jest.Mock).mockResolvedValue('new-hashed-password');
+
+      await expect(
+        service.resetPassword('valid-token', 'newPassword123'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('allows only one of two concurrent resets with the same token to succeed', async () => {
+      const merchant = mockMerchant({
+        passwordResetToken: 'valid-token',
+        passwordResetExpiry: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      repository.findOne.mockResolvedValue(merchant);
+      (bcrypt.hash as jest.Mock).mockResolvedValue('new-hashed-password');
+
+      let consumed = false;
+      repository.update.mockImplementation(async () => {
+        if (consumed) {
+          return { affected: 0 };
+        }
+        consumed = true;
+        return { affected: 1 };
+      });
+
+      const results = await Promise.allSettled([
+        service.resetPassword('valid-token', 'newPassword123'),
+        service.resetPassword('valid-token', 'newPassword123'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+        BadRequestException,
+      );
     });
   });
 
