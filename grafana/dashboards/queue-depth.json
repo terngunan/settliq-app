@@ -10,6 +10,7 @@
       "id": 1,
       "title": "Queue Depth by Queue",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 0, "w": 16, "h": 8 },
       "targets": [
         {
@@ -26,6 +27,7 @@
       "id": 2,
       "title": "Processing Rate (msg/s)",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
       "targets": [
         {
@@ -40,6 +42,7 @@
       "id": 3,
       "title": "Current Queue Depths",
       "type": "bargauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 8, "w": 12, "h": 6 },
       "targets": [
         {
@@ -66,6 +69,7 @@
       "id": 4,
       "title": "Failed Jobs (1h)",
       "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 12, "y": 8, "w": 12, "h": 6 },
       "targets": [
         {

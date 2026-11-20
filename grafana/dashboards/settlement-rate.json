@@ -10,6 +10,7 @@
       "id": 1,
       "title": "Settlement Success Rate",
       "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
       "targets": [
         {
@@ -37,6 +38,7 @@
       "id": 2,
       "title": "Settlements by Status Over Time",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 8, "y": 0, "w": 16, "h": 8 },
       "targets": [
         {
@@ -53,6 +55,7 @@
       "id": 3,
       "title": "Failed Settlements (1h)",
       "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {

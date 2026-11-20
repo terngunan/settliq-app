@@ -10,6 +10,7 @@
       "id": 1,
       "title": "Payment Volume Over Time",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
       "targets": [
         {
@@ -26,6 +27,7 @@
       "id": 2,
       "title": "Total Payments (24h)",
       "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {
@@ -39,6 +41,7 @@
       "id": 3,
       "title": "Payment Volume USD (24h)",
       "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 6, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {
