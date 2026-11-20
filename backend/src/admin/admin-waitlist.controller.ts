@@ -42,8 +42,8 @@ export class AdminWaitlistController {
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
     @Query('includeUnsubscribed') includeUnsubscribed?: string,
-    @Res() res?: Response,
-  ) {
+    @Res({ passthrough: true }) res?: Response,
+  ): Promise<string> {
     const csv = await this.waitlistService.exportCsv({
       country,
       dateFrom,
@@ -53,6 +53,7 @@ export class AdminWaitlistController {
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="waitlist-export.csv"');
-    res.send(csv);
+
+    return csv;
   }
 }
