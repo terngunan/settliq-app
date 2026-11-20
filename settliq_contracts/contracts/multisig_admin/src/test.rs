@@ -237,3 +237,44 @@ fn test_set_threshold_to_two_succeeds() {
 
     assert_eq!(client.get_threshold(), 2);
 }
+
+// ── Issue #228: prune_rejected_proposal ──────────────────────────────────────
+
+/// A rejected proposal can be pruned immediately, before its `expires_at`
+/// timestamp, reclaiming storage rent.
+#[test]
+fn test_prune_rejected_proposal_before_expiration() {
+    let (env, client, admin1, _admin2, _admin3) = setup_env();
+
+    let id = client.propose(&admin1, &op(&env, "transfer"), &args(&env));
+    client.reject_proposal(&admin1, &id);
+
+    let proposal = client.get_proposal(&id).unwrap();
+    assert!(proposal.rejected);
+    // Still well before expires_at.
+    assert!(env.ledger().timestamp() <= proposal.expires_at);
+
+    client.prune_rejected_proposal(&id);
+
+    assert!(client.get_proposal(&id).is_none(), "rejected proposal must be removed from storage");
+}
+
+/// Pruning a proposal that has not been rejected must panic.
+#[test]
+#[should_panic(expected = "proposal not rejected")]
+fn test_prune_non_rejected_proposal_panics() {
+    let (env, client, admin1, _admin2, _admin3) = setup_env();
+
+    let id = client.propose(&admin1, &op(&env, "transfer"), &args(&env));
+
+    client.prune_rejected_proposal(&id);
+}
+
+/// Pruning a non-existent proposal must panic.
+#[test]
+#[should_panic(expected = "proposal not found")]
+fn test_prune_missing_proposal_panics() {
+    let (_env, client, _admin1, _admin2, _admin3) = setup_env();
+
+    client.prune_rejected_proposal(&999);
+}
