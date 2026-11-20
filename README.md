@@ -91,3 +91,6 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 
 <!-- handsoff-issue-233 -->
 - #233: [Smart Contract] payment_escrow: resume entry point emits no event when resuming operations from emergency pause
+
+<!-- handsoff-issue-234 -->
+- #234: [Smart Contract] payment_escrow: Contract lacks set_upgrade_delay_ledgers and get_upgrade_delay_ledgers entry points
