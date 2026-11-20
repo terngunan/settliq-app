@@ -245,7 +245,16 @@ impl LiquidityRouter {
     /// Checks if the AMM pool has sufficient depth for a swap.
     /// Returns SorobanAMM if depth is sufficient (impact below the configured
     /// threshold), otherwise returns StellarClassicDEX and emits an event.
-    pub fn check_and_route(env: Env, pool_address: Address, amount_in: i128) -> Route {
+    ///
+    /// Issue #223: `is_token_a` selects which reserve (token_a or token_b) the
+    /// incoming amount is measured against, so the depth check reflects the
+    /// actual swap direction.
+    pub fn check_and_route(
+        env: Env,
+        pool_address: Address,
+        amount_in: i128,
+        is_token_a: bool,
+    ) -> Route {
         // Issue #46: Reject zero and negative input amounts immediately.
         if amount_in <= 0 {
             panic!("amount must be positive");
@@ -258,26 +267,23 @@ impl LiquidityRouter {
             panic!("pool not allowlisted");
         }
 
-        let client = AmmClient::new(&env, &pool_address);
-        let (reserve_a, reserve_b) = client.get_reserves();
+        // Issue #1086: Query AMM reserves via cross-contract call using the
+        // generated AmmClient.
+        let amm_client = AmmClient::new(&env, &pool_address);
+        let (reserve_a, reserve_b) = amm_client.get_reserves();
 
-        // Issue #1085: Use the admin-configurable depth threshold
-        let threshold_bps = Self::get_depth_threshold_bps(env.clone());
+        // Issue #23: Select the relevant reserve based on swap direction.
+        let relevant_reserve = if is_token_a { reserve_a } else { reserve_b };
 
-        // Compute price impact in basis points: amount_in / reserve * 10_000
-        let reserve = if reserve_a < reserve_b { reserve_a } else { reserve_b };
-        if reserve <= 0 {
-            panic!("invalid reserves");
+        if relevant_reserve <= 0 {
+            panic!("pool has no liquidity");
         }
 
-        let impact_bps = amount_in
-            .checked_mul(10_000)
-            .expect("overflow")
-            / reserve;
+        // Issue #1085: Compare price impact against the admin-configured threshold.
+        let threshold_bps = Self::get_depth_threshold_bps(env.clone());
+        let impact_bps = (amount_in * 10_000) / relevant_reserve;
 
-        if impact_bps <= threshold_bps as i128 {
-            Route::SorobanAMM
-        } else {
+        if impact_bps > threshold_bps as i128 {
             env.events().publish(
                 (Symbol::new(&env, "FallbackRouteUsed"),),
                 FallbackRouteUsed {
@@ -287,6 +293,8 @@ impl LiquidityRouter {
                 },
             );
             Route::StellarClassicDEX
+        } else {
+            Route::SorobanAMM
         }
     }
 }
