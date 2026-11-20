@@ -16,6 +16,10 @@ use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Bytes, Env
 const THRESHOLD: u32 = 2;
 const EXPIRY_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 
+/// Length of a canonical Soroban StrKey-encoded address (`G...` account or
+/// `C...` contract), in ASCII bytes.
+const STRKEY_LEN: u32 = 56;
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proposal {
@@ -234,9 +238,8 @@ impl MultisigAdminContract {
     ///
     /// A rejected proposal can never be executed, so it is safe to reclaim its
     /// storage rent right away. Permissionless: rejection is objectively
-    /// checkable on-chain via `proposal.rejected`. Panics if the proposal does
-    /// not exist or has not been rejected.
-    pub fn prune_rejected_proposal(env: Env, proposal_id: u64) {
+    /// checkable on-chain, so any caller may prune a rejected proposal.
+    pub fn prune_rejected(env: Env, proposal_id: u64) {
         let key = DataKey::Proposal(proposal_id);
         let proposal: Proposal = env
             .storage()
@@ -255,11 +258,57 @@ impl MultisigAdminContract {
         );
     }
 
-    /// Removes an expired, never-executed proposal from persistent storage.
-    ///
-    /// Permissionless: expiry is objectively checkable on-chain via
-    /// `env.ledger().timestamp() > proposal.expires_at`, matching the check
-    /// used by `approve`/`maybe_execute`. This lets anyone reclaim the rent
-    /// and 
+    fn require_admin(env: &Env, caller: &Address) {
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admins)
+            .expect("admins not set");
+        if !admins.contains(caller) {
+            panic!("caller is not an admin");
+        }
+    }
 
-/* … truncated 5079 chars — edit only what you need near the top … */
+    fn has_approved(approvals: &Vec<Address>, caller: &Address) -> bool {
+        approvals.contains(caller)
+    }
+
+    fn maybe_execute(env: &Env, proposal: &mut Proposal) {
+        if proposal.executed || proposal.rejected {
+            return;
+        }
+        if proposal.approvals.len() < THRESHOLD {
+            return;
+        }
+        if env.ledger().timestamp() > proposal.expires_at {
+            return;
+        }
+
+        proposal.executed = true;
+        env.events().publish(
+            ("MULTISIG", "proposal_executed"),
+            ProposalExecutedEvent {
+                proposal_id: proposal.id,
+                operation: proposal.operation.clone(),
+            },
+        );
+    }
+
+    /// Decodes a StrKey-encoded address from raw bytes.
+    ///
+    /// `Address::from_string_bytes` assumes the input is a canonical 56-byte
+    /// ASCII StrKey string (`G...` for accounts, `C...` for contracts) and
+    /// panics with an opaque internal error on anything else (e.g. raw 32-byte
+    /// public key bytes). We validate length and prefix up front so callers get
+    /// a descriptive panic instead of a raw decode failure. (#229)
+    fn decode_address(_env: &Env, args: &Bytes) -> Address {
+        if args.len() != STRKEY_LEN {
+            panic!("invalid address: expected 56-byte StrKey string");
+        }
+        let first = args.get(0).expect("invalid address: empty bytes");
+        if first != b'G' && first != b'C' {
+            panic!("invalid address: StrKey must start with 'G' or 'C'");
+        }
+        Address::from_string_bytes(args)
+    }
+}

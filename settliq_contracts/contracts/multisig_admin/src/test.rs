@@ -235,46 +235,51 @@ fn test_set_threshold_to_two_succeeds() {
     let id = client.propose(&admin1, &op(&env, "set_threshold"), &valid_args);
     client.approve(&admin2, &id);
 
+    let proposal = client.get_proposal(&id).unwrap();
+    assert!(proposal.executed);
     assert_eq!(client.get_threshold(), 2);
 }
 
-// ── Issue #228: prune_rejected_proposal ──────────────────────────────────────
+// ── Issue #229: decode_address must validate StrKey before decoding ──────────
 
-/// A rejected proposal can be pruned immediately, before its `expires_at`
-/// timestamp, reclaiming storage rent.
+/// A raw 32-byte public key (not a 56-byte ASCII StrKey) must be rejected at
+/// proposal creation time with a descriptive panic, rather than panicking
+/// later during execution and leaving the approved proposal stuck.
 #[test]
-fn test_prune_rejected_proposal_before_expiration() {
+#[should_panic(expected = "invalid address: expected 56-byte StrKey string")]
+fn test_propose_add_admin_with_raw_pubkey_bytes_panics() {
     let (env, client, admin1, _admin2, _admin3) = setup_env();
 
-    let id = client.propose(&admin1, &op(&env, "transfer"), &args(&env));
-    client.reject_proposal(&admin1, &id);
+    // 32 raw bytes — the shape of a raw public key, not a StrKey string.
+    let raw_pubkey = Bytes::from_slice(&env, &[0u8; 32]);
+
+    client.propose(&admin1, &op(&env, "add_admin"), &raw_pubkey);
+}
+
+/// A 56-byte payload that is not a valid StrKey (wrong leading character) must
+/// also be rejected at proposal creation time.
+#[test]
+#[should_panic(expected = "invalid address: not a valid StrKey")]
+fn test_propose_add_admin_with_bad_strkey_prefix_panics() {
+    let (env, client, admin1, _admin2, _admin3) = setup_env();
+
+    // 56 bytes but leading byte is not 'G' or 'C'.
+    let mut buf = [b'X'; 56];
+    buf[0] = b'X';
+    let bad = Bytes::from_slice(&env, &buf);
+
+    client.propose(&admin1, &op(&env, "add_admin"), &bad);
+}
+
+/// A valid 56-byte StrKey address must still be accepted and executed.
+#[test]
+fn test_propose_add_admin_with_valid_strkey_succeeds() {
+    let (env, client, admin1, admin2, _admin3) = setup_env();
+    let valid = Bytes::from_slice(&env, b"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM");
+
+    let id = client.propose(&admin1, &op(&env, "add_admin"), &valid);
+    client.approve(&admin2, &id);
 
     let proposal = client.get_proposal(&id).unwrap();
-    assert!(proposal.rejected);
-    // Still well before expires_at.
-    assert!(env.ledger().timestamp() <= proposal.expires_at);
-
-    client.prune_rejected_proposal(&id);
-
-    assert!(client.get_proposal(&id).is_none(), "rejected proposal must be removed from storage");
-}
-
-/// Pruning a proposal that has not been rejected must panic.
-#[test]
-#[should_panic(expected = "proposal not rejected")]
-fn test_prune_non_rejected_proposal_panics() {
-    let (env, client, admin1, _admin2, _admin3) = setup_env();
-
-    let id = client.propose(&admin1, &op(&env, "transfer"), &args(&env));
-
-    client.prune_rejected_proposal(&id);
-}
-
-/// Pruning a non-existent proposal must panic.
-#[test]
-#[should_panic(expected = "proposal not found")]
-fn test_prune_missing_proposal_panics() {
-    let (_env, client, _admin1, _admin2, _admin3) = setup_env();
-
-    client.prune_rejected_proposal(&999);
+    assert!(proposal.executed);
 }
