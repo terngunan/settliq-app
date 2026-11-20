@@ -76,9 +76,6 @@ jobs:
         with:
           tool: cargo-tarpaulin
 
-      - name: Install Rust wasm target
-        run: rustup target add wasm32v1-none
-
       # The cargo workspace lives in settliq_contracts/; there is no manifest at
       # the repository root, so every cargo invocation has to run from there.
       - name: cargo test
