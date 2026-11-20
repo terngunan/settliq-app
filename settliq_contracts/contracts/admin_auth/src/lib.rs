@@ -11,6 +11,11 @@ pub const TTL_THRESHOLD_LEDGERS: u32 = 518_400;
 /// ~60 days at 5s/ledger.
 pub const TTL_BUMP_LEDGERS: u32 = 1_036_800;
 
+/// Maximum number of admin entries `list_admins` will return in a single
+/// call. Caps ledger iteration so a caller cannot request an unbounded page
+/// and exhaust Soroban CPU/memory limits.
+pub const MAX_PAGE_SIZE: u32 = 50;
+
 /// Admin roles. Admin accounts are stored separately from merchant accounts
 /// as a deployment convention — the contract itself does not cross-check
 /// against a merchant registry, so the separation is upheld by the caller
@@ -237,22 +242,6 @@ impl AdminAuthContract {
         caller.require_auth();
         Self::require_super_admin(&env, &caller);
 
-        let previous = caller.clone();
+        l
 
-        // Update the SuperAdmin key
-        env.storage().instance().set(&DataKey::SuperAdmin, &new_super_admin);
-
-        // Demote the previous super admin to a regular Admin so they no longer
-        // hold SuperAdmin credentials (#11).
-        Self::save(
-            &env,
-            AdminUser {
-                admin: previous.clone(),
-                role: AdminRole::Admin,
-                active: true,
-            },
-        );
-
-        //
-
-/* … truncated 5490 chars — edit only what you need near the top … */
+/* … truncated 555 chars — edit only what you need near the top … */
