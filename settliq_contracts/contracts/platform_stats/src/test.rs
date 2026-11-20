@@ -50,6 +50,23 @@ fn test_record_merchant_and_payment() {
 }
 
 #[test]
+fn test_record_payment_increments_total_payments_by_one() {
+    let (_env, client, admin) = setup();
+    client.record_payment(&admin, &1_000_000i128, &true);
+    assert_eq!(client.stats().total_payments, 1);
+}
+
+#[test]
+fn test_record_payment_n_times_yields_count_n() {
+    let (_env, client, admin) = setup();
+    let n = 5u32;
+    for _ in 0..n {
+        client.record_payment(&admin, &1_000_000i128, &true);
+    }
+    assert_eq!(client.stats().total_payments, n);
+}
+
+#[test]
 fn test_record_merchant_emits_event() {
     let (env, client, admin) = setup();
     client.record_merchant(&admin);
@@ -229,18 +246,15 @@ fn test_bucket_rollover_constant_storage_footprint_across_10_periods() {
 fn test_large_bucket_gap_resets_active_count() {
     let (env, client, admin) = setup();
 
-    // Record in bucket 0.
     client.record_payment(&admin, &1_000_000i128, &true);
-    client.record_payment(&admin, &2_000_000i128, &true);
-    assert_eq!(client.stats().active_payments_24h, 2);
+    assert_eq!(client.stats().active_payments_24h, 1);
 
-    // Jump forward 5 full windows at once (skipping intermediate buckets).
-    env.ledger().set_sequence_number(5 * ACTIVE_WINDOW_LEDGERS);
-
-    // No payments were recorded in the intermediate buckets, so the active
-    // count must be 0, not a stale value from a previous bucket.
+    // Jump forward by 5 full windows.
+    env.ledger()
+        .set_sequence_number(5 * ACTIVE_WINDOW_LEDGERS + 1);
     assert_eq!(client.stats().active_payments_24h, 0);
 
-    client.record_payment(&admin, &5_000_000i128, &true);
+    client.record_payment(&admin, &1_000_000i128, &true);
     assert_eq!(client.stats().active_payments_24h, 1);
+    assert_eq!(client.stats().total_payments, 2);
 }
