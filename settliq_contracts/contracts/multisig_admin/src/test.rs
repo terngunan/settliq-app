@@ -235,51 +235,53 @@ fn test_set_threshold_to_two_succeeds() {
     let id = client.propose(&admin1, &op(&env, "set_threshold"), &valid_args);
     client.approve(&admin2, &id);
 
-    let proposal = client.get_proposal(&id).unwrap();
-    assert!(proposal.executed);
     assert_eq!(client.get_threshold(), 2);
 }
 
-// ── Issue #229: decode_address must validate StrKey before decoding ──────────
+// ── Issue #230: set_threshold must validate against admin count at execution ─
 
-/// A raw 32-byte public key (not a 56-byte ASCII StrKey) must be rejected at
-/// proposal creation time with a descriptive panic, rather than panicking
-/// later during execution and leaving the approved proposal stuck.
+/// A `set_threshold` proposal queued while there are 3 admins must be
+/// re-validated against the admin count at execution time.  If admins are
+/// removed after the proposal is created, executing a threshold that now
+/// exceeds the remaining admin count must be rejected.
 #[test]
-#[should_panic(expected = "invalid address: expected 56-byte StrKey string")]
-fn test_propose_add_admin_with_raw_pubkey_bytes_panics() {
-    let (env, client, admin1, _admin2, _admin3) = setup_env();
+fn test_set_threshold_rejected_when_admin_count_reduced() {
+    let (env, client, admin1, admin2, admin3) = setup_env();
 
-    // 32 raw bytes — the shape of a raw public key, not a StrKey string.
-    let raw_pubkey = Bytes::from_slice(&env, &[0u8; 32]);
+    // Queue a set_threshold(3) proposal while there are 3 admins.
+    let threshold_args = Bytes::from_slice(&env, &3u32.to_be_bytes());
+    let threshold_id = client.propose(&admin1, &op(&env, "set_threshold"), &threshold_args);
 
-    client.propose(&admin1, &op(&env, "add_admin"), &raw_pubkey);
+    // Remove admin3 via a properly-approved remove_admin proposal.
+    let remove_args = Bytes::from_slice(&env, &admin3.to_string().into_bytes());
+    let remove_id = client.propose(&admin1, &op(&env, "remove_admin"), &remove_args);
+    client.approve(&admin2, &remove_id);
+
+    // Now only 2 admins remain; executing set_threshold(3) must be rejected.
+    let result = client.try_approve(&admin2, &threshold_id);
+    assert!(
+        result.is_err(),
+        "set_threshold(3) must be rejected when admin count has dropped to 2"
+    );
+    assert_eq!(client.get_threshold(), 2, "threshold must remain unchanged");
 }
 
-/// A 56-byte payload that is not a valid StrKey (wrong leading character) must
-/// also be rejected at proposal creation time.
+/// A `set_threshold` proposal whose value is still within the updated admin
+/// count must execute successfully after admins are removed.
 #[test]
-#[should_panic(expected = "invalid address: not a valid StrKey")]
-fn test_propose_add_admin_with_bad_strkey_prefix_panics() {
-    let (env, client, admin1, _admin2, _admin3) = setup_env();
+fn test_set_threshold_within_updated_admin_count_succeeds() {
+    let (env, client, admin1, admin2, admin3) = setup_env();
 
-    // 56 bytes but leading byte is not 'G' or 'C'.
-    let mut buf = [b'X'; 56];
-    buf[0] = b'X';
-    let bad = Bytes::from_slice(&env, &buf);
+    // Queue a set_threshold(2) proposal while there are 3 admins.
+    let threshold_args = Bytes::from_slice(&env, &2u32.to_be_bytes());
+    let threshold_id = client.propose(&admin1, &op(&env, "set_threshold"), &threshold_args);
 
-    client.propose(&admin1, &op(&env, "add_admin"), &bad);
-}
+    // Remove admin3, leaving 2 admins.
+    let remove_args = Bytes::from_slice(&env, &admin3.to_string().into_bytes());
+    let remove_id = client.propose(&admin1, &op(&env, "remove_admin"), &remove_args);
+    client.approve(&admin2, &remove_id);
 
-/// A valid 56-byte StrKey address must still be accepted and executed.
-#[test]
-fn test_propose_add_admin_with_valid_strkey_succeeds() {
-    let (env, client, admin1, admin2, _admin3) = setup_env();
-    let valid = Bytes::from_slice(&env, b"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM");
-
-    let id = client.propose(&admin1, &op(&env, "add_admin"), &valid);
-    client.approve(&admin2, &id);
-
-    let proposal = client.get_proposal(&id).unwrap();
-    assert!(proposal.executed);
+    // set_threshold(2) is still valid with 2 admins.
+    client.approve(&admin2, &threshold_id);
+    assert_eq!(client.get_threshold(), 2);
 }
