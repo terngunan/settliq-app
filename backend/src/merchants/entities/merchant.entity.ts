@@ -9,6 +9,12 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
+export enum MerchantRole {
+  MERCHANT = 'merchant',
+  ADMIN = 'admin',
+  SUPERADMIN = 'superadmin',
+}
+
 export enum MerchantStatus {
   ACTIVE = 'active',
   INACTIVE = 'inactive',
