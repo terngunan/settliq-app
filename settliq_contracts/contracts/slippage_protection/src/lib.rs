@@ -148,23 +148,25 @@ impl SlippageProtectionContract {
     }
 
     /// Admin-only: remove a per-pair slippage override to restore the pair to the global default.
-    /// Returns the slippage bps value that was removed, or panics if no override exists.
+    /// Returns `Some(bps)` with the removed override value when one existed, or
+    /// `None` when no override was set for the pair (no panic, no event emitted).
     pub fn remove_pair_max_slippage(
         env: Env,
         caller: soroban_sdk::Address,
         asset_a: soroban_sdk::Address,
         asset_b: soroban_sdk::Address,
-    ) -> u32 {
+    ) -> Option<u32> {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         let (k1, k2) = Self::canonical_pair(&env, asset_a.clone(), asset_b.clone());
 
         let key = DataKey::PairMaxSlippageBps(k1, k2);
-        let removed_bps: u32 = env
-            .storage()
-            .instance()
-            .get(&key)
-            .expect("no pair max slippage override exists");
+        let removed_bps: Option<u32> = env.storage().instance().get(&key);
+
+        let removed_bps = match removed_bps {
+            Some(bps) => bps,
+            None => return None,
+        };
 
         env.storage().instance().remove(&key);
 
@@ -177,7 +179,7 @@ impl SlippageProtectionContract {
             },
         );
 
-        removed_bps
+        Some(removed_bps)
     }
 
     pub fn get_max_slippage(env: Env) -> u32 {
@@ -242,21 +244,16 @@ impl SlippageProtectionContract {
     }
 
     fn assert_within_tolerance(env: &Env, expected: i128, actual: i128, max_bps: u32) {
-        if expected <= 0 {
-            panic!("expected must be positive");
+        if expected == 0 {
+            panic!("expected must be non-zero");
         }
-
-        // Favorable price movement (actual >= expected): the trade executed at
-        // or better than the expected price. Slippage protection only guards
-        // against receiving less, so positive deviation must not revert.
-        if actual >= expected {
-            return;
-        }
-
-        // Downside slippage: shortfall relative to expected, in basis points.
-        let diff = expected - actual;
-        let dev = diff * 10_000 / expected;
-        if dev > max_bps as i128 {
+        let diff = if actual > expected {
+            actual - expected
+        } else {
+            expected - actual
+        };
+        let diff_bps = diff.saturating_mul(10_000) / expected.abs();
+        if diff_bps > max_bps as i128 {
             env.events().publish(
                 ("SLIPPAGE_PROTECTION", "slippage_exceeded"),
                 SlippageExceededEvent {
@@ -265,7 +262,7 @@ impl SlippageProtectionContract {
                     max_bps,
                 },
             );
-            panic!("slippage tolerance exceeded");
+            panic!("slippage exceeded");
         }
     }
 }

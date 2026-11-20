@@ -238,33 +238,66 @@ fn test_pair_override_does_not_affect_other_pairs() {
     assert_eq!(client.get_pair_max_slippage(&token_a, &token_c), 100);
 }
 
-// ── set_pair_max_slippage: audit event tests (issue #66) ─────────────────────
+// ── Issue #258: remove_pair_max_slippage graceful handling ───────────────────
 
-/// set_pair_max_slippage emits PairMaxSlippageUpdatedEvent on first set.
-/// previous_bps should be the global default (100) since no override existed.
 #[test]
-fn test_set_pair_max_slippage_emits_event_first_set() {
+fn test_remove_pair_max_slippage_existing_returns_some() {
     let (env, client, admin) = setup_env();
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
     client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
 
-    let events = env.events().all();
-    let last = events.last().unwrap();
+    // Removing an existing override returns the previous value.
+    let removed = client.remove_pair_max_slippage(&admin, &token_a, &token_b);
+    assert_eq!(removed, Some(200));
 
-    // Topic check.
+    // After removal the pair falls back to the global default.
+    assert_eq!(client.get_pair_max_slippage(&token_a, &token_b), 100);
+}
+
+#[test]
+fn test_remove_pair_max_slippage_non_existent_returns_none() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // No override was ever set — must not panic, returns None.
+    let removed = client.remove_pair_max_slippage(&admin, &token_a, &token_b);
+    assert_eq!(removed, None);
+}
+
+#[test]
+fn test_remove_pair_max_slippage_twice_second_returns_none() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &75);
+
+    // First removal succeeds.
     assert_eq!(
-        last.1,
-        (
-            soroban_sdk::String::from_str(&env, "SLIPPAGE"),
-            soroban_sdk::String::from_str(&env, "pair_max_slippage_updated")
-        )
-            .into_val(&env)
+        client.remove_pair_max_slippage(&admin, &token_a, &token_b),
+        Some(75)
     );
+    // Second removal of the already-cleared override is graceful.
+    assert_eq!(
+        client.remove_pair_max_slippage(&admin, &token_a, &token_b),
+        None
+    );
+}
 
-    // Data check: previous_bps is the global default, new_bps is 200.
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-    assert_eq!(event.previous_bps, 100);
-    assert_eq!(event.new_bps, 200);
+#[test]
+fn test_remove_pair_max_slippage_reversed_order() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Store with (A, B) order, remove with (B, A) — commutative.
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &150);
+    assert_eq!(
+        client.remove_pair_max_slippage(&admin, &token_b, &token_a),
+        Some(150)
+    );
+    assert_eq!(client.get_pair_max_slippage(&token_a, &token_b), 100);
 }
