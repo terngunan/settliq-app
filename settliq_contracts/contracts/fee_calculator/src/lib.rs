@@ -44,6 +44,27 @@ pub struct MerchantVolume {
     pub bucket_ledgers: Vec<u32>,
 }
 
+impl MerchantVolume {
+    /// Construct an empty volume record with all buckets zeroed and stamped
+    /// at `current_ledger`.
+    pub fn new(env: &Env, current_ledger: u32) -> Self {
+        let mut buckets = Vec::new(env);
+        let mut bucket_ledgers = Vec::new(env);
+        let mut i = 0u32;
+        while i < VOLUME_BUCKETS {
+            buckets.push_back(0i128);
+            bucket_ledgers.push_back(current_ledger);
+            i += 1;
+        }
+        MerchantVolume {
+            window_start_ledger: current_ledger,
+            volume_usdc: 0,
+            buckets,
+            bucket_ledgers,
+        }
+    }
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -261,201 +282,6 @@ impl FeeCalculatorContract {
     ///
     /// Safe for permissionless use by payment frontends and checkout APIs
     /// that need to display an estimated fee before committing to a settlement.
-    /// The returned `(fee, net, fee_bps)` values are computed against the
-    /// merchant's current volume (the amount is *not* added to the window).
-    pub fn quote_fee(env: Env, merchant: Address, amount: i128) -> (i128, i128, u32) {
-        if amount <= 0 {
-            panic!("amount must be > 0");
-        }
+    /// The returned `(fee, net, fee_bps)` values are 
 
-        let volume = Self::current_volume(&env, &merchant);
-        let fee_bps = Self::select_fee_bps(&env, volume);
-
-        let mut fee = amount
-            .checked_mul(fee_bps as i128)
-            .expect("overflow")
-            .checked_div(BPS_DENOMINATOR)
-            .expect("division failure");
-
-        let min_fee_stroops: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MinFeeStroops)
-            .unwrap_or(0);
-        if fee < min_fee_stroops {
-            fee = min_fee_stroops;
-        }
-        if fee > amount {
-            fee = amount;
-        }
-
-        let net = amount.checked_sub(fee).expect("underflow");
-
-        (fee, net, fee_bps)
-    }
-
-    pub fn get_merchant_volume(env: Env, merchant: Address) -> i128 {
-        Self::current_volume(&env, &merchant)
-    }
-
-    // ------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------
-
-    fn require_admin(env: &Env, caller: &Address) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin not initialized");
-        if &admin != caller {
-            panic!("unauthorized: not admin");
-        }
-    }
-
-    fn require_authorized_caller(env: &Env, caller: &Address) {
-        let settlement_caller: Option<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::SettlementCaller);
-        match settlement_caller {
-            Some(authorized) => {
-                if &authorized != caller {
-                    panic!("unauthorized: not settlement caller");
-                }
-            }
-            None => panic!("settlement caller not configured"),
-        }
-    }
-
-    fn validate_tiers(tiers: &Vec<FeeTier>) {
-        if tiers.is_empty() {
-            panic!("tiers must not be empty");
-        }
-        let mut prev_threshold: i128 = -1;
-        for tier in tiers.iter() {
-            if tier.threshold_usdc < 0 {
-                panic!("threshold must be >= 0");
-            }
-            if tier.threshold_usdc <= prev_threshold {
-                panic!("thresholds must be strictly ascending");
-            }
-            if tier.fee_bps > BPS_DENOMINATOR as u32 {
-                panic!("fee_bps must be <= 10000");
-            }
-            prev_threshold = tier.threshold_usdc;
-        }
-    }
-
-    fn select_fee_bps(env: &Env, volume: i128) -> u32 {
-        let tiers: Vec<FeeTier> = env
-            .storage()
-            .instance()
-            .get(&DataKey::FeeTiers)
-            .expect("tiers not initialized");
-
-        let mut selected: u32 = tiers.get(0).unwrap().fee_bps;
-        for tier in tiers.iter() {
-            if volume >= tier.threshold_usdc {
-                selected = tier.fee_bps;
-            } else {
-                break;
-            }
-        }
-        selected
-    }
-
-    /// Builds an empty bucket ring anchored at `current_ledger`.
-    fn empty_volume(env: &Env, current_ledger: u32) -> MerchantVolume {
-        let mut buckets: Vec<i128> = Vec::new(env);
-        let mut bucket_ledgers: Vec<u32> = Vec::new(env);
-        let mut i: u32 = 0;
-        while i < VOLUME_BUCKETS {
-            buckets.push_back(0i128);
-            bucket_ledgers.push_back(current_ledger);
-            i += 1;
-        }
-        MerchantVolume {
-            window_start_ledger: current_ledger,
-            volume_usdc: 0,
-            buckets,
-            bucket_ledgers,
-        }
-    }
-
-    /// Returns the merchant's current trailing 30-day volume without mutating
-    /// storage. Stale buckets are ignored (treated as expired) but not cleared.
-    fn current_volume(env: &Env, merchant: &Address) -> i128 {
-        let current_ledger = env.ledger().sequence();
-        let key = DataKey::MerchantVolume(merchant.clone());
-        let data: Option<MerchantVolume> = env.storage().persistent().get(&key);
-        match data {
-            Some(d) => Self::prune_and_sum(env, &d, current_ledger),
-            None => 0,
-        }
-    }
-
-    /// Adds `amount` to the merchant's trailing volume and returns the updated
-    /// trailing 30-day total.
-    fn update_and_get_volume(env: &Env, merchant: &Address, amount: i128) -> i128 {
-        let current_ledger = env.ledger().sequence();
-        let key = DataKey::MerchantVolume(merchant.clone());
-
-        let mut data: MerchantVolume = match env.storage().persistent().get(&key) {
-            Some(d) => d,
-            None => Self::empty_volume(env, current_ledger),
-        };
-
-        // Expire buckets that have fallen outside the trailing 30-day window.
-        Self::prune_buckets(env, &mut data, current_ledger);
-
-        // Determine the active bucket index for the current ledger.
-        let elapsed = current_ledger.saturating_sub(data.window_start_ledger);
-        let bucket_index = (elapsed / LEDGERS_PER_BUCKET) % VOLUME_BUCKETS;
-
-        let existing: i128 = data.buckets.get(bucket_index).unwrap_or(0);
-        let updated = existing.checked_add(amount).expect("volume overflow");
-        data.buckets.set(bucket_index, updated);
-        data.bucket_ledgers.set(bucket_index, current_ledger);
-
-        let total = Self::prune_and_sum(env, &data, current_ledger);
-        data.volume_usdc = total;
-
-        env.storage().persistent().set(&key, &data);
-        total
-    }
-
-    /// Clears any bucket whose last-write ledger is older than the trailing
-    /// 30-day window relative to `current_ledger`.
-    fn prune_buckets(env: &Env, data: &mut MerchantVolume, current_ledger: u32) {
-        let mut i: u32 = 0;
-        while i < VOLUME_BUCKETS {
-            let last = data.bucket_ledgers.get(i).unwrap_or(0);
-            let age = current_ledger.saturating_sub(last);
-            if age >= LEDGERS_PER_30_DAYS {
-                data.buckets.set(i, 0i128);
-                data.bucket_ledgers.set(i, current_ledger);
-            }
-            i += 1;
-        }
-        let _ = env;
-    }
-
-    /// Sums the live buckets, ignoring any that have expired relative to
-    /// `current_ledger`. Does not mutate `data`.
-    fn prune_and_sum(env: &Env, data: &MerchantVolume, current_ledger: u32) -> i128 {
-        let mut total: i128 = 0;
-        let mut i: u32 = 0;
-        while i < VOLUME_BUCKETS {
-            let last = data.bucket_ledgers.get(i).unwrap_or(0);
-            let age = current_ledger.saturating_sub(last);
-            if age < LEDGERS_PER_30_DAYS {
-                let bucket = data.buckets.get(i).unwrap_or(0);
-                total = total.checked_add(bucket).expect("volume overflow");
-            }
-            i += 1;
-        }
-        let _ = env;
-        total
-    }
-}
+/* … truncated 6980 chars — edit only what you need near the top … */
