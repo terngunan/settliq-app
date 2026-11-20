@@ -71,6 +71,13 @@ jobs:
         with:
           targets: wasm32v1-none
 
+      # Caches ~/.cargo/registry, ~/.cargo/git, and the workspace target/
+      # directory between runs so cargo test/build don't rebuild from scratch.
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: settliq_contracts
+
       - name: Install cargo-tarpaulin
         uses: taiki-e/install-action@v2
         with:
@@ -83,7 +90,7 @@ jobs:
       # the repository root, so every cargo invocation has to run from there.
       - name: cargo test
         working-directory: settliq_contracts
-        run: cargo test
+        run: cargo test --locked
 
       - name: Generate coverage report
         working-directory: settliq_contracts
