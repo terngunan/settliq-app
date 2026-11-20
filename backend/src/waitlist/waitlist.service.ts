@@ -11,6 +11,8 @@ import { WaitlistEntry } from './entities/waitlist.entity';
 import { JoinWaitlistDto } from './dto/join-waitlist.dto';
 import { WaitlistEntryResponseDto } from './dto/waitlist-entry-response.dto';
 
+const REFERRAL_CODE_MAX_ATTEMPTS: number = 5;
+
 export interface ExportCsvOptions {
   dateFrom?: string;
   dateTo?: string;
@@ -29,12 +31,14 @@ export class WaitlistService {
       throw new ConflictException('Email is already on the waitlist');
     }
 
+    const referralCode = await this.generateUniqueReferralCode();
+
     const entry = this.waitlistRepo.create({
       email: dto.email,
       username: dto.username,
       businessName: dto.businessName,
       country: dto.country,
-      referralCode: randomBytes(4).toString('hex').toUpperCase(),
+      referralCode,
       unsubscribeToken: randomBytes(16).toString('hex'),
     });
 
