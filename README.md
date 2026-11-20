@@ -88,3 +88,6 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 
 <!-- handsoff-issue-232 -->
 - #232: [Smart Contract] payment_escrow: expire entry point does not check require_not_paused during emergency drain
+
+<!-- handsoff-issue-233 -->
+- #233: [Smart Contract] payment_escrow: resume entry point emits no event when resuming operations from emergency pause
