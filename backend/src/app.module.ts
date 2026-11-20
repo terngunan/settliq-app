@@ -49,6 +49,8 @@ import { RefreshToken } from './auth/refresh-token.entity';
           type: 'postgres',
           url: config.get<string>('DATABASE_URL'),
           entities: [Merchant, WaitlistEntry],
+          migrations: [__dirname + '/migrations/*{.ts,.js}'],
+          migrationsRun: config.get<boolean>('DATABASE_RUN_MIGRATIONS', true),
           synchronize: !isProd,
           ssl,
         };
