@@ -207,21 +207,21 @@ impl StellarConfirmationsContract {
 
         // Snapshot the required confirmation count at first confirmation so
         // later admin changes to the global ConfirmationCount don't retroactively
-        // move the threshold for payments already accumulating confirmations.
-        let required: u32 = if state.required_confs == 0 {
-            let current: u32 =
-                env.storage().instance().get(&DataKey::ConfirmationCount).unwrap();
-            state.required_confs = current;
-            current
-        } else {
-            state.required_confs
-        };
+        // affect in-flight payments.
+        if state.required_confs == 0 {
+            let required: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ConfirmationCount)
+                .expect("confirmation count not set");
+            state.required_confs = required;
+        }
 
-        // Save consolidated payment state (issue #74)
-        Self::save_payment_state(&env, &payment_id, &state);
+        let required = state.required_confs;
 
+        // Emit per-confirmation event
         env.events().publish(
-            ("STELLAR_CONFS", "confirmation_recorded"),
+            ("confirmation_recorded", payment_id.clone()),
             ConfirmationRecordedEvent {
                 payment_id: payment_id.clone(),
                 ledger_seq,
@@ -230,6 +230,203 @@ impl StellarConfirmationsContract {
             },
         );
 
-        // Transition to Set
+        // Transition to Settling once the threshold is reached
+        if new_confs >= required {
+            state.settling = true;
 
-/* … truncated 5995 chars — edit only what you need near the top … */
+            env.events().publish(
+                ("settlement_authorised", payment_id.clone()),
+                SettlementAuthorisedEvent {
+                    payment_id: payment_id.clone(),
+                    ledger_seq,
+                    amount,
+                    merchant,
+                },
+            );
+        }
+
+        // Persist consolidated state
+        Self::save_payment_state(&env, &payment_id, &state);
+
+        new_confs
+    }
+
+    /// Marks a pending confirmation as terminally failed. Admin-only.
+    /// Once failed, further `confirm_payment` calls for the payment are rejected.
+    pub fn fail_confirmation(env: Env, caller: Address, payment_id: BytesN<32>) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let mut state = Self::load_payment_state(&env, &payment_id);
+
+        // Guard: cannot fail an already-settling payment
+        assert!(!state.settling, "payment already settling");
+        // Guard: already failed — terminal state
+        assert!(!state.failed, "payment already failed");
+
+        state.failed = true;
+
+        env.events().publish(
+            ("confirmation_failed", payment_id.clone()),
+            ConfirmationFailedEvent {
+                payment_id: payment_id.clone(),
+                confirmations: state.confs,
+                required: state.required_confs,
+            },
+        );
+
+        Self::save_payment_state(&env, &payment_id, &state);
+    }
+
+    // ── state queries ───────────────────────────────────────────────────────
+
+    /// Returns the number of confirmations recorded so far for a payment.
+    pub fn get_confirmations(env: Env, payment_id: BytesN<32>) -> u32 {
+        Self::load_payment_state(&env, &payment_id).confs
+    }
+
+    /// Returns the required confirmation count snapshotted for a payment.
+    pub fn get_required_confirmations(env: Env, payment_id: BytesN<32>) -> u32 {
+        Self::load_payment_state(&env, &payment_id).required_confs
+    }
+
+    /// Returns true once the payment has crossed the confirmation threshold.
+    pub fn is_settling(env: Env, payment_id: BytesN<32>) -> bool {
+        Self::load_payment_state(&env, &payment_id).settling
+    }
+
+    /// Returns true once the payment has been marked terminally failed.
+    pub fn is_failed(env: Env, payment_id: BytesN<32>) -> bool {
+        Self::load_payment_state(&env, &payment_id).failed
+    }
+
+    /// Returns the full consolidated confirmation state for a payment.
+    pub fn get_payment_state(env: Env, payment_id: BytesN<32>) -> PaymentConfirmationState {
+        Self::load_payment_state(&env, &payment_id)
+    }
+
+    /// Returns the globally configured required confirmation count.
+    pub fn get_confirmation_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ConfirmationCount)
+            .expect("confirmation count not set")
+    }
+
+    /// Returns the current admin address.
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set")
+    }
+
+    /// Returns the linked payment_escrow contract address, if any.
+    pub fn get_payment_escrow_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PaymentEscrowContract)
+    }
+
+    // ── admin entry points ──────────────────────────────────────────────────
+
+    /// Updates the global required confirmation count. Admin-only (issue #109).
+    pub fn set_confirmation_count(env: Env, caller: Address, new_value: u32) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        assert!(new_value > 0, "confirmation_count must be > 0");
+
+        let old_value: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfirmationCount)
+            .expect("confirmation count not set");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfirmationCount, &new_value);
+
+        env.events().publish(
+            ("confirmation_count_updated",),
+            ConfirmationCountUpdatedEvent {
+                caller,
+                old_value,
+                new_value,
+            },
+        );
+    }
+
+    /// Links or unlinks the payment_escrow contract. Admin-only (issue #109).
+    pub fn set_payment_escrow_contract(
+        env: Env,
+        caller: Address,
+        new_value: Option<Address>,
+    ) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let old_value: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PaymentEscrowContract);
+
+        match &new_value {
+            Some(addr) => env
+                .storage()
+                .instance()
+                .set(&DataKey::PaymentEscrowContract, addr),
+            None => env
+                .storage()
+                .instance()
+                .remove(&DataKey::PaymentEscrowContract),
+        }
+
+        env.events().publish(
+            ("payment_escrow_contract_updated",),
+            PaymentEscrowContractUpdatedEvent {
+                caller,
+                old_value,
+                new_value,
+            },
+        );
+    }
+
+    /// Transfers admin rights to a new address. Admin-only.
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+    }
+
+    // ── internal helpers ────────────────────────────────────────────────────
+
+    fn require_admin(env: &Env, caller: &Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        assert!(*caller == admin, "caller is not admin");
+    }
+
+    fn load_payment_state(env: &Env, payment_id: &BytesN<32>) -> PaymentConfirmationState {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PaymentState(payment_id.clone()))
+            .unwrap_or(PaymentConfirmationState {
+                confs: 0,
+                first_ledger: 0,
+                last_ledger: 0,
+                required_confs: 0,
+                settling: false,
+                failed: false,
+            })
+    }
+
+    fn save_payment_state(env: &Env, payment_id: &BytesN<32>, state: &PaymentConfirmationState) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PaymentState(payment_id.clone()), state);
+    }
+}
