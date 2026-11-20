@@ -144,7 +144,7 @@ rules:
               expr: 'count_over_time({job="backend-logs"} |= "processing rate dropped to zero" [2m]) > 0'
         noDataState: OK
         execErrState: OK
-        for: 0s
+        for: 2m
         annotations:
           summary: "Queue processing has stalled"
           description: "A Bull queue has stopped processing jobs. Settlement or webhook delivery may be delayed."
