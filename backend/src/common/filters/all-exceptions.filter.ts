@@ -8,16 +8,6 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 
-/**
- * Global exception filter that catches all unhandled exceptions and returns a
- * sanitized JSON response so that internal stack traces, database errors, and
- * infrastructure details are never leaked to clients.
- *
- * - HttpExceptions (including NestJS validation errors) preserve their
- *   designated HTTP status code and message payload.
- * - All other exceptions are returned as 500 Internal Server Error with a
- *   generic message; the full stack trace is logged internally.
- */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
@@ -32,14 +22,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
-      message = exception.getResponse();
+      const exceptionResponse = exception.getResponse();
+
+      if (
+        exceptionResponse !== null &&
+        typeof exceptionResponse === 'object' &&
+        'message' in exceptionResponse
+      ) {
+        message = (exceptionResponse as { message: unknown }).message;
+      } else {
+        message = exceptionResponse;
+      }
     } else {
       status = HttpStatus.INTERNAL_SERVER_ERROR;
       message = 'Internal server error';
-      // Log the full error internally without exposing it to the client.
+
+      const stack = exception instanceof Error ? exception.stack : undefined;
       this.logger.error(
-        `Unhandled exception on ${request.method} ${request.url}`,
-        exception instanceof Error ? exception.stack : String(exception),
+        `${request.method} ${request.url}`,
+        stack,
       );
     }
 
