@@ -8,6 +8,14 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
+/// Minimum remaining TTL (in ledgers) before a persistent batch entry is
+/// extended. Roughly one day at 5s per ledger.
+const BATCH_TTL_THRESHOLD: u32 = 17_280;
+/// TTL (in ledgers) that persistent batch entries are extended to on write and
+/// read. Roughly 30 days at 5s per ledger, keeping historical Merkle roots
+/// available for proof verification.
+const BATCH_TTL_EXTEND_TO: u32 = 518_400;
+
 /// A single sibling node on the path from a leaf to the Merkle root.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,7 +109,7 @@ impl ReconciliationContract {
         env.events().publish(
             ("RECONCILIATION", "admin_transferred"),
             AdminTransferredEvent {
-                previous_admin: current_admin,
+                previous_admin: caller,
                 new_admin,
             },
         );
@@ -121,7 +129,11 @@ impl ReconciliationContract {
             submitted_at: env.ledger().timestamp(),
         };
 
-        env.storage().persistent().set(&DataKey::Batch(batch_id), &record);
+        let key = DataKey::Batch(batch_id);
+        env.storage().persistent().set(&key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BATCH_TTL_THRESHOLD, BATCH_TTL_EXTEND_TO);
         env.storage().instance().set(&DataKey::CurrentBatch, &batch_id);
         env.storage().instance().set(&DataKey::BatchCount, &(batch_id + 1));
 
@@ -140,11 +152,11 @@ impl ReconciliationContract {
 
     pub fn get_current_batch(env: Env) -> Option<BatchRecord> {
         let id: u32 = env.storage().instance().get(&DataKey::CurrentBatch)?;
-        env.storage().persistent().get(&DataKey::Batch(id))
+        Self::load_batch(&env, id)
     }
 
     pub fn get_batch(env: Env, batch_id: u32) -> Option<BatchRecord> {
-        env.storage().persistent().get(&DataKey::Batch(batch_id))
+        Self::load_batch(&env, batch_id)
     }
 
     pub fn batch_count(env: Env) -> u32 {
@@ -154,9 +166,9 @@ impl ReconciliationContract {
     pub fn verify_settlement(env: Env, payment_id: BytesN<32>, proof: Vec<MerkleProofNode>) -> bool {
         let current = match Self::get_current_batch(env.clone()) {
             Some(b) => b,
-            None => return true,
+            None => return false,
         };
-        !Self::verify_against_root(&env, &current.merkle_root, &payment_id, &proof)
+        Self::verify_against_root(&env, &current.merkle_root, &payment_id, &proof)
     }
 
     pub fn verify_settlement_proof(
@@ -171,13 +183,6 @@ impl ReconciliationContract {
         };
         Self::verify_against_root(&env, &batch.merkle_root, &payment_id, &proof)
     }
-
-    pub fn archive_batches(env: Env, admin: Address, upper_batch_id: u32) {
-        admin.require_auth();
-        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if stored != admin {
-            panic!("Not admin");
-        }
 
     /// Permanently archives batches with IDs below `before_batch_id`, bounded
     /// by `max_batches` so retention can be applied incrementally. Current and
@@ -211,6 +216,19 @@ impl ReconciliationContract {
         );
     }
 
+    /// Loads a batch from persistent storage, extending its TTL so historical
+    /// Merkle roots remain available for proof verification.
+    fn load_batch(env: &Env, batch_id: u32) -> Option<BatchRecord> {
+        let key = DataKey::Batch(batch_id);
+        let record: Option<BatchRecord> = env.storage().persistent().get(&key);
+        if record.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BATCH_TTL_THRESHOLD, BATCH_TTL_EXTEND_TO);
+        }
+        record
+    }
+
     fn verify_against_root(
         env: &Env,
         root: &BytesN<32>,
@@ -237,7 +255,4 @@ impl ReconciliationContract {
     pub fn hash_pair(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
         let mut buf = [0u8; 64];
         left.copy_into_slice(&mut buf[..32]);
-        right.copy_into_slice(&mut buf[32..]);
-        env.crypto().sha256(&soroban_sdk::Bytes::from_array(env, &buf)).to_bytes()
-    }
-}
+        right.copy_into_slice(&

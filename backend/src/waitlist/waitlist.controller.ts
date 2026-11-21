@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Delete, Body, Param, Query, Res, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, Delete, Body, Param, Query, Res, HttpCode, HttpStatus, BadRequestException } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -39,10 +39,16 @@ export class WaitlistController {
   }
 
   @Get('position')
-  @ApiOperation({ summary: 'Get position by email' })
+  @ApiOperation({ summary: 'Get position by email (requires unsubscribe token)' })
   @ApiQuery({ name: 'email', required: true })
-  getPosition(@Query('email') email: string) {
-    return this.waitlistService.getPosition(email);
+  @ApiQuery({ name: 'token', required: true, description: 'Unsubscribe token issued at registration' })
+  @ApiBadRequestResponse({ description: 'Missing email or token' })
+  @ApiUnauthorizedResponse({ description: 'Invalid token' })
+  getPosition(@Query('email') email: string, @Query('token') token: string) {
+    if (!email || !token) {
+      throw new BadRequestException('email and token are required');
+    }
+    return this.waitlistService.getPosition(email, token);
   }
 
   /**

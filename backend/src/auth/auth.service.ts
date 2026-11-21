@@ -52,9 +52,7 @@ export class AuthService {
     const merchant = this.merchantsRepo.create({
       email: dto.email,
       passwordHash,
-      businessName: dto.businessName,
-      businessType: dto.businessType,
-      country: dto.country,
+      name: dto.name,
       status: MerchantStatus.PENDING,
     });
 
@@ -239,49 +237,6 @@ export class AuthService {
 
     const merchant = await this.merchantsRepo.findOne({
       where: { apiKeyLookupHash: lookupHash },
-      withDeleted: false,
-    });
+      wi
 
-    if (!merchant || !merchant.apiKeyHash) return null;
-
-    const valid = await bcrypt.compare(rawKey, merchant.apiKeyHash);
-    return valid ? merchant : null;
-  }
-
-  private async issueTokenPair(merchant: Merchant): Promise<AuthTokenResponseDto> {
-    const payload = { sub: merchant.id, email: merchant.email, status: merchant.status };
-    const accessToken = this.jwtService.sign(payload);
-
-    const rawRefresh = crypto.randomBytes(48).toString('hex');
-    const tokenHash = this.hashToken(rawRefresh);
-
-    const refreshToken = this.refreshTokenRepo.create({
-      tokenHash,
-      merchant,
-      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
-    });
-    await this.refreshTokenRepo.save(refreshToken);
-
-    return {
-      accessToken,
-      refreshToken: rawRefresh,
-      expiresIn: 3600,
-    };
-  }
-
-  private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
-  }
-
-  private createRawApiKey(): string {
-    return `${API_KEY_PREFIX}${crypto.randomBytes(API_KEY_BYTES).toString('hex')}`;
-  }
-
-  private async hashApiKey(
-    rawKey: string,
-  ): Promise<{ apiKeyHash: string; apiKeyLookupHash: string }> {
-    const apiKeyHash = await bcrypt.hash(rawKey, 12);
-    const apiKeyLookupHash = crypto.createHash('sha256').update(rawKey).digest('hex');
-    return { apiKeyHash, apiKeyLookupHash };
-  }
-}
+/* … truncated 73 chars — edit only what you need near the top … */

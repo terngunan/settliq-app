@@ -1,30 +1,54 @@
 apiVersion: 1
 
-rules:
+groups:
   - orgId: 1
-    name: CachePerformanceAlerts
-    folder: "Backend Alerts"
+    name: Settliq Cache Performance Alerts
+    folder: Settliq
     interval: 1m
     rules:
-      - uid: "exchange-rate-cache-hit-rate-low"
-        title: "Exchange Rate Cache Hit Rate Below 80%"
-        condition: "A"
+
+      # Cache hit rate < 80% → alert team
+      - uid: cache_hit_rate_low
+        title: Cache Hit Rate Low (< 80%)
+        condition: C
         data:
-          - refId: "A"
-            queryType: "range"
-            datasourceUid: "Prometheus"
+          - refId: A
+            queryType: ''
             relativeTimeRange:
-              from: 60
+              from: 300
               to: 0
+            datasourceUid: Prometheus
             model:
-              refId: "A"
-              expr: '((sum(rate(cache_requests_total{key_pattern="exchange-rate",result="hit"}[1m])) / sum(rate(cache_requests_total{key_pattern="exchange-rate"}[1m]))) < 0.8) and (sum(rate(cache_requests_total{key_pattern="exchange-rate"}[1m])) > 0)'
-        noDataState: OK
+              expr: |
+                rate(cache_hits_total[5m])
+                / (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m]) + 0.0001)
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            queryType: ''
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.8
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+              refId: C
+              type: classic_conditions
+        noDataState: NoData
         execErrState: Alerting
-        for: 0s
+        for: 5m
         annotations:
-          summary: "Exchange rate cache hit rate dropped below 80%"
-          description: "Hit rate for key_pattern=exchange-rate is below 0.80 over the last 1 minute. Value: {{ $values.A.Value }}"
+          summary: Cache hit rate dropped below 80% over the last 5 minutes
+          description: 'Cache hit rate: {{ $values.A.Value | humanizePercentage }}'
         labels:
-          severity: "warning"
-          component: "cache"
+          severity: warning
+          team: platform

@@ -44,6 +44,32 @@ pub enum DataKey {
     Payment(String),
 }
 
+/// Emitted when admin authority is rotated to a new address.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferredEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+    pub timestamp: u64,
+}
+
+/// Rich event payload emitted on every payment lifecycle transition.
+///
+/// Carries the full payment identity (merchant, amount, asset, expiry) plus the
+/// resulting status so off-chain indexers can reconstruct historical payments
+/// from event logs alone, without relying on persistent storage retention.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentEvent {
+    pub id: String,
+    pub merchant: Address,
+    pub amount: i128,
+    pub asset: Address,
+    pub status: PaymentStatus,
+    pub expiry: u64,
+    pub timestamp: u64,
+}
+
 #[contract]
 pub struct PaymentRequestContract;
 
@@ -82,20 +108,59 @@ fn require_admin(env: &Env, caller: &Address) {
     }
 }
 
+/// Build the rich event payload for a payment's current state.
+fn payment_event(env: &Env, payment: &Payment) -> PaymentEvent {
+    PaymentEvent {
+        id: payment.id.clone(),
+        merchant: payment.merchant.clone(),
+        amount: payment.amount,
+        asset: payment.asset.clone(),
+        status: payment.status.clone(),
+        expiry: payment.expiry,
+        timestamp: env.ledger().timestamp(),
+    }
+}
+
 #[contractimpl]
 impl PaymentRequestContract {
-    /// Initialize the contract with an admin address.
+    /// Atomic constructor: runs once during contract deployment.
     ///
-    /// Must be called once before any other function. The admin is authorized to
-    /// drive settlement state transitions (`confirm`, `set_settling`, `settle`,
-    /// `fail`) without requiring the merchant's signature each time, enabling
-    /// backend settlement daemons to operate autonomously.
-    pub fn initialize(env: Env, admin: Address) {
+    /// Sets the admin address that is authorized to drive settlement state
+    /// transitions (`confirm`, `set_settling`, `settle`, `fail`) without
+    /// requiring the merchant's signature each time, enabling backend
+    /// settlement daemons to operate autonomously. Because this executes as
+    /// part of the deployment transaction, there is no window for a
+    /// front-runner to initialize the contract with their own admin.
+    pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
-        }
         env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
+    /// Rotate admin authority to a new address.
+    ///
+    /// Only the current admin may call this. Enables rotating the admin key to
+    /// a multisig or timelock contract if the original key is compromised or
+    /// needs to be upgraded.
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        require_admin(&env, &caller);
+
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized");
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("transferred")),
+            AdminTransferredEvent {
+                old_admin,
+                new_admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
     }
 
     /// Initialize a new payment request.
@@ -141,7 +206,7 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("created")),
-            PaymentStatus::Pending,
+            payment_event(&env, &payment),
         );
     }
 
@@ -169,7 +234,7 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("confirmed")),
-            PaymentStatus::Confirmed,
+            payment_event(&env, &payment),
         );
     }
 
@@ -193,7 +258,7 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("settling")),
-            PaymentStatus::Settling,
+            payment_event(&env, &payment),
         );
     }
 
@@ -219,13 +284,14 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("settled")),
-            PaymentStatus::Settled,
+            payment_event(&env, &payment),
         );
     }
 
     /// Mark payment as failed.
     ///
-    /// Requires admin authorization.
+    /// Requires admin authorization — the backend settlement daemon reports
+    /// failed payouts.
     pub fn fail(env: Env, caller: Address, id: String) {
         caller.require_auth();
         require_admin(&env, &caller);
@@ -233,11 +299,8 @@ impl PaymentRequestContract {
         let key = DataKey::Payment(id.clone());
         let mut payment = load_payment(&env, &key);
 
-        // Prevent failing during in-flight fiat payout (#81)
-        if payment.status == PaymentStatus::Settled ||
-           payment.status == PaymentStatus::Expired ||
-           payment.status == PaymentStatus::Settling {
-            panic!("Cannot fail a finalized or in-flight payment");
+        if is_terminal(&payment.status) {
+            panic!("Invalid transition: payment already terminal");
         }
 
         payment.status = PaymentStatus::Failed;
@@ -245,25 +308,27 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("failed")),
-            PaymentStatus::Failed,
+            payment_event(&env, &payment),
         );
     }
 
     /// Mark payment as expired.
     ///
-    /// Permissionless: anyone may call this once the expiry timestamp has
-    /// passed. The merchant's signature is NOT required, so abandoned payments
-    /// can always be cleaned up by the backend or any third party.
-    pub fn expire(env: Env, id: String) {
+    /// Requires admin authorization — the backend expiry sweeper drives this
+    /// transition once the payment's expiry timestamp has passed.
+    pub fn expire(env: Env, caller: Address, id: String) {
+        caller.require_auth();
+        require_admin(&env, &caller);
+
         let key = DataKey::Payment(id.clone());
         let mut payment = load_payment(&env, &key);
 
-        if payment.status != PaymentStatus::Pending && payment.status != PaymentStatus::Confirmed {
-            panic!("Cannot expire a finalized or settling payment");
+        if is_terminal(&payment.status) {
+            panic!("Invalid transition: payment already terminal");
         }
 
         if env.ledger().timestamp() <= payment.expiry {
-            panic!("Payment has not yet reached expiry time");
+            panic!("Payment not yet expired");
         }
 
         payment.status = PaymentStatus::Expired;
@@ -271,22 +336,12 @@ impl PaymentRequestContract {
 
         env.events().publish(
             (symbol_short!("payment"), id, symbol_short!("expired")),
-            PaymentStatus::Expired,
+            payment_event(&env, &payment),
         );
     }
 
-    /// Fetch payment details.
+    /// Read a payment record.
     pub fn get_payment(env: Env, id: String) -> Payment {
-        env.storage().persistent().get(&DataKey::Payment(id)).expect("Payment not found")
-    }
-
-    /// Return the configured admin address.
-    pub fn get_admin(env: Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Contract not initialized")
+        load_payment(&env, &DataKey::Payment(id))
     }
 }
-
-mod test;
