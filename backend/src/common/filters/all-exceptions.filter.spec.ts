@@ -116,18 +116,39 @@ describe('AllExceptionsFilter', () => {
       expect(body.message).toBe('Not Found');
     });
 
-    it('preserves a 400 Bad Request response object', () => {
+    it('flattens a ValidationPipe-style response object into a top-level message', () => {
       const statusMock = jest.fn();
       const jsonMock = jest.fn();
       const host = buildHost(statusMock, jsonMock);
-      const payload = { message: ['field must not be empty'], error: 'Bad Request', statusCode: 400 };
+      const payload = {
+        statusCode: 400,
+        message: ['email must be an email'],
+        error: 'Bad Request',
+      };
 
       filter.catch(new HttpException(payload, HttpStatus.BAD_REQUEST), host);
 
       expect(statusMock).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
       const body = jsonMock.mock.calls[0][0];
       expect(body.statusCode).toBe(400);
-      expect(body.message).toEqual(payload);
+      expect(body.message).toEqual(['email must be an email']);
+      expect(body.timestamp).toBeDefined();
+      // No redundant nesting: message must not be the whole response object.
+      expect(body.message).not.toEqual(payload);
+      expect(body.message).not.toHaveProperty('message');
+    });
+
+    it('extracts a string message from an object response', () => {
+      const statusMock = jest.fn();
+      const jsonMock = jest.fn();
+      const host = buildHost(statusMock, jsonMock);
+      const payload = { statusCode: 401, message: 'Unauthorized', error: 'Unauthorized' };
+
+      filter.catch(new HttpException(payload, HttpStatus.UNAUTHORIZED), host);
+
+      const body = jsonMock.mock.calls[0][0];
+      expect(body.statusCode).toBe(401);
+      expect(body.message).toBe('Unauthorized');
     });
 
     it('does not log stack traces for HttpExceptions', () => {
