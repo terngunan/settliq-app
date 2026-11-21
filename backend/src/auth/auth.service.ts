@@ -98,6 +98,12 @@ export class AuthService {
    * Validates the reset token against the stored hash, rejects missing/expired
    * tokens with 400 Bad Request, hashes the new password with bcrypt, and
    * clears the reset token and expiry so it cannot be reused.
+   *
+   * The password hash update and token invalidation are performed in a single
+   * atomic conditional UPDATE keyed on the stored token hash. Concurrent
+   * requests presenting the same token race on that row: only the first to
+   * execute the UPDATE matches the token, and every subsequent request sees
+   * zero affected rows and is rejected — preventing replay.
    */
   async resetPassword(resetToken: string, newPassword: string): Promise<void> {
     const tokenHash = this.hashToken(resetToken);
@@ -114,10 +120,26 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired password reset token');
     }
 
-    merchant.passwordHash = await bcrypt.hash(newPassword, 12);
-    merchant.passwordResetToken = null;
-    merchant.passwordResetExpiry = null;
-    await this.merchantsRepo.save(merchant);
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    // Atomic consume: only apply the new hash and clear the token when the
+    // stored token still matches. A concurrent request that already consumed
+    // the token will match zero rows here.
+    const result = await this.merchantsRepo
+      .createQueryBuilder()
+      .update(Merchant)
+      .set({
+        passwordHash,
+        passwordResetToken: null,
+        passwordResetExpiry: null,
+      })
+      .where('id = :id', { id: merchant.id })
+      .andWhere('passwordResetToken = :tokenHash', { tokenHash })
+      .execute();
+
+    if (!result.affected) {
+      throw new BadRequestException('Invalid or expired password reset token');
+    }
   }
 
   /**
