@@ -44,6 +44,27 @@ pub struct MerchantVolume {
     pub bucket_ledgers: Vec<u32>,
 }
 
+impl MerchantVolume {
+    /// Construct an empty volume record with all buckets zeroed and stamped
+    /// at `current_ledger`.
+    pub fn new(env: &Env, current_ledger: u32) -> Self {
+        let mut buckets = Vec::new(env);
+        let mut bucket_ledgers = Vec::new(env);
+        let mut i = 0u32;
+        while i < VOLUME_BUCKETS {
+            buckets.push_back(0i128);
+            bucket_ledgers.push_back(current_ledger);
+            i += 1;
+        }
+        MerchantVolume {
+            window_start_ledger: current_ledger,
+            volume_usdc: 0,
+            buckets,
+            bucket_ledgers,
+        }
+    }
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -261,169 +282,6 @@ impl FeeCalculatorContract {
     ///
     /// Safe for permissionless use by payment frontends and checkout APIs
     /// that need to display an estimated fee before committing to a settlement.
-    /// The returned `(fee, net, fee_bps)` values are identical to what
-    /// `calculate_fee` would produce for the same inputs, but no volume
-    /// accumulation occurs.
-    pub fn quote_fee(env: Env, merchant: Address, amount: i128) -> (i128, i128, u32) {
-        if amount <= 0 {
-            panic!("amount must be > 0");
-        }
+    /// The returned `(fee, net, fee_bps)` values are 
 
-        // Read current trailing volume without mutating storage.
-        let volume = Self::get_merchant_volume(env.clone(), merchant).volume_usdc;
-        let fee_bps = Self::select_fee_bps(&env, volume);
-
-        let mut fee = amount
-            .checked_mul(fee_bps as i128)
-            .expect("overflow")
-            .checked_div(BPS_DENOMINATOR)
-            .expect("division failure");
-
-        let min_fee_stroops: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MinFeeStroops)
-            .unwrap_or(0);
-        if fee < min_fee_stroops {
-            fee = min_fee_stroops;
-        }
-        if fee > amount {
-            fee = amount;
-        }
-
-        let net = amount.checked_sub(fee).expect("underflow");
-
-        (fee, net, fee_bps)
-    }
-
-    fn require_admin(env: &Env, caller: &Address) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin not initialized");
-        if &admin != caller {
-            panic!("unauthorized: caller is not admin");
-        }
-    }
-
-    fn require_authorized_caller(env: &Env, caller: &Address) {
-        let settlement_caller: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::SettlementCaller)
-            .expect("settlement caller not configured");
-        if &settlement_caller != caller {
-            panic!("unauthorized: caller is not settlement caller");
-        }
-    }
-
-    fn validate_tiers(tiers: &Vec<FeeTier>) {
-        if tiers.is_empty() {
-            panic!("tiers must not be empty");
-        }
-        let mut prev_threshold: i128 = -1;
-        for tier in tiers.iter() {
-            if tier.threshold_usdc <= prev_threshold {
-                panic!("tiers must be strictly ascending");
-            }
-            if tier.fee_bps > BPS_DENOMINATOR as u32 {
-                panic!("fee_bps exceeds 100%");
-            }
-            prev_threshold = tier.threshold_usdc;
-        }
-    }
-
-    fn select_fee_bps(env: &Env, volume_usdc: i128) -> u32 {
-        let tiers: Vec<FeeTier> = env
-            .storage()
-            .instance()
-            .get(&DataKey::FeeTiers)
-            .expect("tiers not initialized");
-        let mut selected: u32 = 0;
-        for tier in tiers.iter() {
-            if volume_usdc >= tier.threshold_usdc {
-                selected = tier.fee_bps;
-            } else {
-                break;
-            }
-        }
-        selected
-    }
-
-    fn get_merchant_volume(env: Env, merchant: Address) -> MerchantVolume {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MerchantVolume(merchant))
-            .unwrap_or(MerchantVolume {
-                window_start_ledger: env.ledger().sequence(),
-                volume_usdc: 0,
-                buckets: Vec::new(&env),
-                bucket_ledgers: Vec::new(&env),
-            })
-    }
-
-    fn update_and_get_volume(env: &Env, merchant: &Address, amount: i128) -> i128 {
-        let key = DataKey::MerchantVolume(merchant.clone());
-        let current_ledger = env.ledger().sequence();
-        let mut volume: MerchantVolume = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(MerchantVolume {
-                window_start_ledger: current_ledger,
-                volume_usdc: 0,
-                buckets: Vec::new(env),
-                bucket_ledgers: Vec::new(env),
-            });
-
-        // Initialize bucket ring if empty.
-        if volume.buckets.is_empty() {
-            let mut buckets = Vec::new(env);
-            let mut ledgers = Vec::new(env);
-            for _ in 0..VOLUME_BUCKETS {
-                buckets.push_back(0i128);
-                ledgers.push_back(0u32);
-            }
-            volume.buckets = buckets;
-            volume.bucket_ledgers = ledgers;
-            volume.window_start_ledger = current_ledger;
-        }
-
-        // Expire stale buckets and recompute the live total.
-        let mut total: i128 = 0;
-        let mut buckets = Vec::new(env);
-        let mut ledgers = Vec::new(env);
-        for i in 0..VOLUME_BUCKETS {
-            let bucket_volume = volume.buckets.get(i).unwrap_or(0);
-            let bucket_ledger = volume.bucket_ledgers.get(i).unwrap_or(0);
-            let expired = bucket_ledger != 0
-                && current_ledger.saturating_sub(bucket_ledger) >= LEDGERS_PER_30_DAYS;
-            if expired {
-                buckets.push_back(0i128);
-                ledgers.push_back(0u32);
-            } else {
-                buckets.push_back(bucket_volume);
-                ledgers.push_back(bucket_ledger);
-                total = total.checked_add(bucket_volume).expect("overflow");
-            }
-        }
-
-        // Write into the current bucket.
-        let bucket_index = ((current_ledger.saturating_sub(volume.window_start_ledger)
-            / LEDGERS_PER_BUCKET)
-            % VOLUME_BUCKETS) as u32;
-        let existing = buckets.get(bucket_index).unwrap_or(0);
-        let updated = existing.checked_add(amount).expect("overflow");
-        buckets.set(bucket_index, updated);
-        ledgers.set(bucket_index, current_ledger);
-        total = total.checked_add(amount).expect("overflow");
-
-        volume.volume_usdc = total;
-        volume.buckets = buckets;
-        volume.bucket_ledgers = ledgers;
-        env.storage().persistent().set(&key, &volume);
-
-        total
-    }
-}
+/* … truncated 6980 chars — edit only what you need near the top … */

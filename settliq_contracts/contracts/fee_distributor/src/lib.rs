@@ -115,14 +115,14 @@ impl FeeDistributorContract {
         admin.require_auth();
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         assert!(admin == stored_admin, "unauthorized");
-        let mut tokens: Vec<Address> = env
+        let mut allowed: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::AllowedTokens)
             .unwrap_or(Vec::new(&env));
-        if !tokens.contains(&token) {
-            tokens.push_back(token);
-            env.storage().instance().set(&DataKey::AllowedTokens, &tokens);
+        if !allowed.contains(&token) {
+            allowed.push_back(token);
+            env.storage().instance().set(&DataKey::AllowedTokens, &allowed);
         }
     }
 
@@ -130,13 +130,13 @@ impl FeeDistributorContract {
         admin.require_auth();
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         assert!(admin == stored_admin, "unauthorized");
-        let tokens: Vec<Address> = env
+        let allowed: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::AllowedTokens)
             .unwrap_or(Vec::new(&env));
         let mut updated: Vec<Address> = Vec::new(&env);
-        for t in tokens.iter() {
+        for t in allowed.iter() {
             if t != token {
                 updated.push_back(t);
             }
