@@ -1,19 +1,25 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsEmail, IsOptional, IsString, Length, Matches } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+} from 'class-validator';
 
 export class JoinWaitlistDto {
+  @ApiProperty({ example: 'user@example.com' })
   @IsEmail()
-  @Transform(({ value }) => value?.trim().toLowerCase())
   email: string;
 
-  @IsOptional()
   @IsString()
   @Length(3, 30)
   @Matches(/^[a-zA-Z0-9_]+$/, {
-    message: 'username may only contain letters, numbers, and underscores',
+    message: 'Username must contain only alphanumeric characters and underscores',
   })
   @Transform(({ value }) => value?.trim().toLowerCase())
-  username?: string;
+  username: string;
 
   @IsOptional()
   @IsString()
@@ -30,5 +36,5 @@ export class JoinWaitlistDto {
   @IsOptional()
   @IsString()
   @Transform(({ value }) => value?.trim())
-  referralCode?: string;
+  username?: string;
 }

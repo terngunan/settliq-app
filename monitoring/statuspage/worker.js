@@ -51,10 +51,12 @@ async function proxyHealthAdmin(env) {
   try {
     upstreamRes = await fetch(`${apiOrigin}/health/admin`, {
       headers: { Accept: 'application/json' },
-      // Cloudflare fetch timeout is 30s by default
+      // Fail fast (5s) instead of the 30s default subrequest limit so a stalled
+      // upstream doesn't hang the worker and exhaust concurrent execution.
+      signal: AbortSignal.timeout(5000),
     });
   } catch (err) {
-    // Network-level failure — API is unreachable
+    // Network-level failure or timeout — API is unreachable
     return jsonResponse(
       {
         status: 'down',
@@ -105,6 +107,18 @@ async function serveStatusPage(env) {
     "`${API_BASE}/api/status`",
   );
 
+  const apiOrigin = env.API_ORIGIN ?? 'https://api.settliq.xyz';
+  const csp = [
+    "default-src 'self'",
+    `script-src 'self' ${apiOrigin}`,
+    `connect-src 'self' ${apiOrigin}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+
   return new Response(injected, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
@@ -112,6 +126,7 @@ async function serveStatusPage(env) {
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Content-Security-Policy': csp,
     },
   });
 }

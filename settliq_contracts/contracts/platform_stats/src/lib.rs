@@ -212,8 +212,58 @@ impl PlatformStatsContract {
             total_merchants,
             total_payments,
             total_settled_volume_usd,
-            active_payments_24h: Self::active_count(&env),
-            health: Self::health(&env),
+            active_payments_24h: Self::current_active(&env),
+            health: PlatformHealth {
+                storage_ok: true,
+                stellar_ok: true,
+                partner_ok,
+            },
+        }
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        Self::require_admin(&env, &caller);
+        assert!(new_admin != caller, "new admin must be distinct");
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            ("PLATFORM_STATS", "admin_transferred"),
+            (caller, new_admin),
+        );
+    }
+
+    fn require_admin(env: &Env, admin: &Address) {
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if &stored != admin {
+            panic!("not admin");
+        }
+        admin.require_auth();
+    }
+
+    fn health(env: &Env) -> SystemHealth {
+        let current_sequence = env.ledger().sequence();
+        let last_seen: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastSeenLedgerSequence)
+            .unwrap_or(current_sequence);
+
+        // stellar_ok is true when the ledger is actively progressing (sequence has increased).
+        // On first call or after contract reinitialization, this may be false for the first check,
+        // but will become true once a subsequent call detects progression.
+        let stellar_ok = current_sequence > last_seen;
+
+        SystemHealth {
+            storage_ok: env.storage().instance().has(&DataKey::Admin),
+            stellar_ok,
+            partner_ok: env
+                .storage()
+                .instance()
+                .get(&DataKey::PartnerOk)
+                .unwrap_or(true),
         }
     }
 }

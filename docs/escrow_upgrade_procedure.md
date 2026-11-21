@@ -1,59 +1,55 @@
-# Soroban Escrow Contract Upgrade Procedure
+# Upgrade the payment escrow contract
 
-This document outlines the procedure for upgrading the `PaymentEscrow` contract WASM using the built-in proxy pattern.
+Use the existing escrow contract ID and a storage-compatible replacement WASM. The upgrade preserves the instance and its stored data. Check any required migration before scheduling.
 
-## Prerequisites
+## Build and upload
 
-- Soroban CLI installed.
-- Admin credentials (the address stored in `DataKey::Admin`).
-- The new contract WASM file.
-
-## Step-by-Step Guide
-
-### 1. Build the New WASM
-Ensure the new version of the contract is compiled to WASM.
-```bash
-cargo build --target wasm32-unknown-unknown --release
-```
-
-### 2. Upload the New WASM
-Upload the new WASM to the network to get its hash. Note that this doesn't deploy a new contract instance; it only stores the bytecode on-chain.
-```bash
-soroban contract install --wasm target/wasm32-unknown-unknown/release/payment_escrow.wasm --source <ADMIN_SECRET> --network <NETWORK>
-```
-The output will be a **WASM Hash** (e.g., `ae34...`).
-
-### 3. Invoke the Upgrade Function
-Call the `upgrade` function on the *existing* contract instance using the admin account.
+From the repository root, set `NETWORK` to the configured Stellar network, `ADMIN` to the signing identity for the escrow administrator, and `ESCROW_ID` to the deployed contract ID. The example uses an account administrator. For a multisig administrator, authorize the calls through its approval process.
 
 ```bash
-soroban contract invoke \
-  --id <EXISTING_CONTRACT_ID> \
-  --source <ADMIN_SECRET> \
-  --network <NETWORK> \
-  -- \
-  upgrade \
-  --caller <ADMIN_ADDRESS> \
-  --new_wasm_hash <NEW_WASM_HASH>
+cd settliq_contracts
+cargo build --release --target wasm32v1-none -p payment-escrow
+ADMIN_ADDRESS=$(stellar keys address "$ADMIN")
+WASM_HASH=$(stellar contract upload --network "$NETWORK" --source-account "$ADMIN" \
+  --wasm target/wasm32v1-none/release/payment_escrow.wasm)
+
+escrow() {
+  stellar contract invoke --id "$ESCROW_ID" --network "$NETWORK" \
+    --source-account "$ADMIN" -- "$@"
+}
 ```
 
-### 4. Verify the Upgrade
-After a successful invocation, verify that the contract version has incremented.
+## Schedule and inspect
+
+Read the current proposal first. Scheduling again replaces the pending hash and restarts the cooldown.
 
 ```bash
-soroban contract invoke \
-  --id <EXISTING_CONTRACT_ID> \
-  --network <NETWORK> \
-  -- \
-  get_version
+escrow get_pending_upgrade
+escrow schedule_upgrade --caller "$ADMIN_ADDRESS" --new_wasm_hash "$WASM_HASH"
+escrow get_pending_upgrade
 ```
-The version should now be `2` (or current version + 1).
 
-## Important Considerations
+Verify that the returned pair contains the uploaded hash. Its second value is the first ledger sequence at which the admin can apply it. The default delay is 17,280 ledgers (about 24 hours at five seconds per ledger). Use the returned ledger as the deadline for the cooldown.
 
-- **Storage Compatibility**: The new WASM must be compatible with the existing storage structure. Adding new fields to `PaymentEscrow` struct or changing `DataKey` variants requires careful migration logic.
-- **Admin Restriction**: Only the address stored in the `Admin` key can trigger an upgrade. If this is a multisig address, the transaction must be signed by the required number of participants.
-- **State Preservation**: All instance and persistent storage (payments, registry address, etc.) are preserved during the upgrade.
+## Apply after the cooldown
 
-## Migration Logic
-If the upgrade requires data migration (e.g., transforming old storage formats to new ones), the `upgrade` function in `lib.rs` should be modified to include the migration logic *before* calling `update_current_contract_wasm`.
+Once the network reaches the apply ledger, check the pending hash and ledger again before submitting the transaction.
+
+```bash
+escrow get_pending_upgrade
+escrow apply_upgrade --caller "$ADMIN_ADDRESS"
+escrow get_pending_upgrade
+```
+
+Confirm that the apply transaction succeeded and that the pending upgrade is now empty (`null`).
+
+## Emergency cancellation
+
+If the hash is unexpected or the release must be withdrawn, the admin can cancel any time before application, including after the cooldown expires.
+
+```bash
+escrow cancel_upgrade --caller "$ADMIN_ADDRESS"
+escrow get_pending_upgrade
+```
+
+Confirm the pending upgrade is empty. To retry, schedule the intended hash and wait for its new apply ledger.
