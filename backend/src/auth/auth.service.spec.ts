@@ -6,12 +6,14 @@ import * as bcrypt from 'bcrypt';
 import { AuthService } from './auth.service';
 import { Merchant } from '../merchants/entities/merchant.entity';
 import { MerchantStatus } from '../merchants/entities/merchant.entity';
+import { RefreshToken } from './entities/refresh-token.entity';
 
 jest.mock('bcrypt');
 
 describe('AuthService', () => {
   let service: AuthService;
   let repository: any;
+  let refreshTokenRepo: any;
   let jwtService: any;
 
   const mockMerchant = (overrides: Partial<Merchant> = {}): Merchant =>
@@ -30,6 +32,12 @@ describe('AuthService', () => {
       save: jest.fn(),
       create: jest.fn(),
     };
+    refreshTokenRepo = {
+      findOne: jest.fn(),
+      save: jest.fn(),
+      create: jest.fn(),
+      delete: jest.fn(),
+    };
     jwtService = {
       sign: jest.fn().mockReturnValue('signed-token'),
     };
@@ -38,6 +46,10 @@ describe('AuthService', () => {
       providers: [
         AuthService,
         { provide: getRepositoryToken(Merchant), useValue: repository },
+        {
+          provide: getRepositoryToken(RefreshToken),
+          useValue: refreshTokenRepo,
+        },
         { provide: JwtService, useValue: jwtService },
       ],
     }).compile();
