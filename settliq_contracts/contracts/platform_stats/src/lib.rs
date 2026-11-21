@@ -222,6 +222,20 @@ impl PlatformStatsContract {
         }
     }
 
+    pub fn get_admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        Self::require_admin(&env, &caller);
+        assert!(new_admin != caller, "new admin must be distinct");
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            ("PLATFORM_STATS", "admin_transferred"),
+            (caller, new_admin),
+        );
+    }
+
     fn require_admin(env: &Env, admin: &Address) {
         let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if &stored != admin {

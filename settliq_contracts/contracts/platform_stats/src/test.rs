@@ -244,3 +244,18 @@ fn test_large_bucket_gap_resets_active_count() {
     client.record_payment(&admin, &5_000_000i128, &true);
     assert_eq!(client.stats().active_payments_24h, 1);
 }
+
+#[test]
+fn test_admin_transfer() {
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+    assert_eq!(client.get_admin(), admin);
+    assert!(client.try_transfer_admin(&admin, &admin).is_err());
+    assert!(client.try_transfer_admin(&successor, &admin).is_err());
+
+    client.transfer_admin(&admin, &successor);
+    assert_eq!(client.get_admin(), successor);
+    assert!(client.try_transfer_admin(&admin, &successor).is_err());
+    client.transfer_admin(&successor, &admin);
+    assert_eq!(client.get_admin(), admin);
+}
