@@ -6,6 +6,12 @@ use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, En
 
 const PAGE_SIZE: u32 = 20;
 
+/// Number of ledgers below which a persistent entry is considered "close to
+/// expiry" and should be bumped. Standard threshold used across the ledger.
+const TTL_THRESHOLD: u32 = 100_000;
+/// Number of ledgers to extend a persistent entry to when bumping.
+const TTL_EXTEND_TO: u32 = 500_000;
+
 // ── types ────────────────────────────────────────────────────────────────────
 
 /// Immutable on-chain settlement record.
@@ -93,6 +99,11 @@ impl SettlementLedgerContract {
     pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+        assert!(new_admin != caller, "cannot transfer to self");
+        assert!(
+            new_admin != env.current_contract_address(),
+            "cannot transfer to contract address"
+        );
         let old_admin: Address = env
             .storage()
             .instance()
@@ -158,6 +169,7 @@ impl SettlementLedgerContract {
         };
 
         env.storage().persistent().set(&key, &record);
+        Self::bump_ttl(&env, &key);
 
         // Append to one bounded page so recording a settlement never rewrites
         // the merchant's full historical index.
@@ -176,7 +188,9 @@ impl SettlementLedgerContract {
             .unwrap_or_else(|| vec![&env]);
         index.push_back(payment_id.clone());
         env.storage().persistent().set(&page_key, &index);
+        Self::bump_ttl(&env, &page_key);
         env.storage().persistent().set(&count_key, &(count + 1));
+        Self::bump_ttl(&env, &count_key);
 
         // Append to one bounded platform-wide page so recording a settlement
         // never rewrites the full global index.  Uses the same page-size
@@ -196,7 +210,9 @@ impl SettlementLedgerContract {
             .unwrap_or_else(|| vec![&env]);
         all_index.push_back(payment_id.clone());
         env.storage().persistent().set(&all_page_key, &all_index);
+        Self::bump_ttl(&env, &all_page_key);
         env.storage().persistent().set(&total_count_key, &(total_count + 1));
+        Self::bump_ttl(&env, &total_count_key);
 
         env.events().publish(
             ("SETTLEMENT_LEDGER", "settlement_recorded"),
@@ -213,49 +229,8 @@ impl SettlementLedgerContract {
 
     /// Fetch a single settlement record by payment_id. Callable by anyone.
     pub fn get_settlement(env: Env, payment_id: BytesN<32>) -> SettlementRecord {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Settlement(payment_id))
-            .expect("settlement not found")
-    }
+        let key = DataKey::Settlement(payment_id);
+        let record: SettlementRecord = env
+            .s
 
-    /// Marks a settlement as void without mutating or deleting the original
-    /// immutable record. A corrected settlement must be recorded under a new
-    /// payment ID and can reference this one in its fiat reference.
-    pub fn void_settlement(env: Env, caller: Address, payment_id: BytesN<32>, reason: String) {
-        caller.require_auth();
-        Self::require_admin(&env, &caller);
-        assert!(env.storage().persistent().has(&DataKey::Settlement(payment_id.clone())), "settlement not found");
-
-        // Validate reason parameter (issue #76)
-        assert!(reason.len() > 0, "reason must not be empty");
-        assert!(reason.len() <= 256, "reason must not exceed 256 characters");
-
-        let key = DataKey::Void(payment_id.clone());
-        assert!(!env.storage().persistent().has(&key), "settlement already voided");
-        let voided_at = env.ledger().timestamp();
-        env.storage().persistent().set(&key, &SettlementVoid {
-            payment_id: payment_id.clone(),
-            reason: reason.clone(),
-            voided_at,
-        });
-
-        env.events().publish(
-            ("SETTLEMENT_LEDGER", "settlement_voided"),
-            SettlementVoidedEvent {
-                payment_id,
-                reason,
-                voided_at,
-            },
-        );
-    }
-
-    fn require_admin(env: &Env, caller: &Address) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin not set");
-        assert!(caller == &admin, "caller is not admin");
-    }
-}
+/* … truncated 2527 chars — edit only what you need near the top … */
