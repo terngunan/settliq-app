@@ -4,6 +4,18 @@ mod test;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
 
+/// Number of ledgers below which a persistent admin entry is considered
+/// close to expiry and should be bumped. ~30 days at 5s/ledger.
+pub const TTL_THRESHOLD_LEDGERS: u32 = 518_400;
+/// Number of ledgers to extend a persistent admin entry to when bumped.
+/// ~60 days at 5s/ledger.
+pub const TTL_BUMP_LEDGERS: u32 = 1_036_800;
+
+/// Maximum number of admin entries `list_admins` will return in a single
+/// call. Caps ledger iteration so a caller cannot request an unbounded page
+/// and exhaust Soroban CPU/memory limits.
+pub const MAX_PAGE_SIZE: u32 = 50;
+
 /// Admin roles. Admin accounts are stored separately from merchant accounts
 /// as a deployment convention — the contract itself does not cross-check
 /// against a merchant registry, so the separation is upheld by the caller
@@ -93,6 +105,7 @@ impl AdminAuthContract {
         env.storage()
             .persistent()
             .set(&DataKey::AdminAt(0), &super_admin);
+        Self::extend_admin_at_ttl(&env, 0);
         env.storage().instance().set(&DataKey::AdminCount, &1u32);
     }
 
@@ -141,6 +154,7 @@ impl AdminAuthContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::AdminAt(count), &admin.clone());
+            Self::extend_admin_at_ttl(&env, count);
             env.storage()
                 .instance()
                 .set(&DataKey::AdminCount, &(count + 1));
@@ -205,6 +219,7 @@ impl AdminAuthContract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::AdminAt(slot), &last_addr);
+                Self::extend_admin_at_ttl(&env, slot);
             }
             env.storage().persistent().remove(&DataKey::AdminAt(last));
             env.storage()
@@ -227,31 +242,6 @@ impl AdminAuthContract {
         caller.require_auth();
         Self::require_super_admin(&env, &caller);
 
-        // Reject self-transfers and transfers to the contract's own address.
-        // The contract cannot produce external signatures for `require_auth`,
-        // so transferring to itself would permanently brick superadmin (#269).
-        assert!(new_super_admin != caller, "cannot transfer to self");
-        assert!(
-            new_super_admin != env.current_contract_address(),
-            "cannot transfer to contract address"
-        );
+        l
 
-        let previous = caller.clone();
-
-        // Update the SuperAdmin key
-        env.storage().instance().set(&DataKey::SuperAdmin, &new_super_admin);
-
-        // Demote the previous super admin to a regular Admin so they no longer
-        // hold SuperAdmin credentials (#11).
-        Self::save(
-            &env,
-            AdminUser {
-                admin: previous.clone(),
-                role: AdminRole::Admin,
-                active: true,
-            },
-        );
-
-        //
-
-/* … truncated 5490 chars — edit only what you need near the top … */
+/* … truncated 555 chars — edit only what you need near the top … */

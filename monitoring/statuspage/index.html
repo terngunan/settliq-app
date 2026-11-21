@@ -214,7 +214,7 @@
 <body>
   <div class="container">
     <header>
-      <div class="logo">Cheese<span>Pay</span> Status</div>
+      <div class="logo">Sett<span>liq</span> Status</div>
       <div id="overall-badge" class="overall-badge loading">
         <span class="dot pulse"></span>
         <span id="overall-text">Checking…</span>
@@ -271,96 +271,13 @@
     // In production this is served by the Cloudflare Worker which proxies
     // /health/admin and injects the response. For direct hosting, set this to
     // your API base URL (must have CORS enabled for status.settliq.xyz).
-    const API_BASE = window.__API_BASE__ || 'https://api.settliq.xyz';
+    // Default to a relative path so local/staging instances query their own
+    // environment (via the worker proxy) instead of production.
+    const API_BASE = window.__API_BASE__ || '/api/status';
     const POLL_INTERVAL_MS = 60_000;
 
     // ─── Component display config ──────────────────────────────────────────────
     const COMPONENT_META = {
-      database:   { label: 'Database',         description: 'Primary PostgreSQL cluster' },
-      redis:      { label: 'Cache',            description: 'Redis cache layer' },
-      api:        { label: 'API',              description: 'REST API gateway' },
-      worker:     { label: 'Background Jobs',  description: 'Async job processing' },
-      storage:    { label: 'Object Storage',   description: 'File & asset storage' },
-    };
+      database:   { label: 'Database',         
 
-    // ─── Status helpers ────────────────────────────────────────────────────────
-    function statusLabel(s) {
-      return { ok: 'Operational', healthy: 'Operational', degraded: 'Degraded', down: 'Outage' }[s] ?? 'Unknown';
-    }
-    function statusClass(s) {
-      return { ok: 'ok', healthy: 'ok', degraded: 'degraded', down: 'down' }[s] ?? 'unknown';
-    }
-
-    // ─── Rendering ─────────────────────────────────────────────────────────────
-    function renderComponents(components) {
-      const card = document.getElementById('components-card');
-      const entries = Object.entries(components || {});
-
-      if (entries.length === 0) {
-        card.innerHTML = '<div class="component-row"><span class="component-name">No components reported</span></div>';
-        return;
-      }
-
-      card.innerHTML = entries.map(([key, comp]) => {
-        const meta = COMPONENT_META[key] || { label: key, description: '' };
-        const cls = statusClass(comp.status);
-        const label = statusLabel(comp.status);
-        const latency = comp.latencyMs != null ? `${comp.latencyMs}ms` : '';
-        return `
-          <div class="component-row">
-            <div>
-              <div class="component-name">${meta.label}</div>
-              ${meta.description ? `<div class="component-meta">${meta.description}</div>` : ''}
-            </div>
-            <div class="component-status status-${cls}">
-              <span class="status-indicator ${cls}"></span>
-              <span>${label}${latency ? ` · ${latency}` : ''}</span>
-            </div>
-          </div>`;
-      }).join('');
-    }
-
-    function renderOverall(overall) {
-      const badge = document.getElementById('overall-badge');
-      const text = document.getElementById('overall-text');
-      const cls = statusClass(overall);
-      badge.className = `overall-badge ${cls === 'ok' ? 'healthy' : cls}`;
-      text.textContent = statusLabel(overall);
-    }
-
-    function renderIncident(incident) {
-      const banner = document.getElementById('incident-banner');
-      const text = document.getElementById('incident-text');
-      if (incident && incident.message) {
-        text.textContent = incident.message;
-        banner.classList.add('visible');
-      } else {
-        banner.classList.remove('visible');
-      }
-    }
-
-    // ─── Data fetching ─────────────────────────────────────────────────────────
-    async function fetchStatus() {
-      try {
-        const res = await fetch(`${API_BASE}/health/admin`, { headers: { Accept: 'application/json' } });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-
-        renderComponents(data.components);
-        renderOverall(data.status || data.overall);
-        renderIncident(data.incident);
-
-        document.getElementById('last-updated').textContent =
-          `Last checked: ${new Date().toLocaleTimeString()}`;
-      } catch (err) {
-        renderOverall('down');
-        document.getElementById('last-updated').textContent =
-          `Last checked: ${new Date().toLocaleTimeString()} (error)`;
-      }
-    }
-
-    fetchStatus();
-    setInterval(fetchStatus, POLL_INTERVAL_MS);
-  </script>
-</body>
-</html>
+/* … truncated 5301 chars — edit only what you need near the top … */

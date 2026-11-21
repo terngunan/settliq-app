@@ -11,6 +11,7 @@ import { JwtAuthGuard } from './guards/jwt.guard';
 import { ApiKeyGuard } from './guards/api-key.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Merchant } from '../merchants/entities/merchant.entity';
+import { MerchantApiKeyController } from '../merchants/merchant-api-key.controller';
 import { RefreshToken } from './refresh-token.entity';
 
 @Global()
@@ -33,7 +34,7 @@ import { RefreshToken } from './refresh-token.entity';
       inject: [ConfigService],
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, MerchantApiKeyController],
   providers: [AuthService, JwtStrategy, ApiKeyStrategy, JwtAuthGuard, ApiKeyGuard, RolesGuard],
   exports: [AuthService, JwtAuthGuard, ApiKeyGuard, RolesGuard],
 })
