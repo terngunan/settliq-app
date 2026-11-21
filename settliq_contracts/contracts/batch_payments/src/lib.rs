@@ -242,17 +242,94 @@ impl BatchPaymentContract {
                 merchant: merchant.clone(),
                 customer: item.customer.clone(),
             };
-            let payment_key = DataKey::Payment(id_bytes.clone());
-            env.storage().persistent().set(&payment_key, &record);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Payment(id_bytes.clone()), &record);
 
-            // Extend TTL for persistent storage to prevent archival after rent period expires (issue #58).
-            // TTL is extended on every read/write; this ensures the entry stays accessible for merchants
-            // and auditors long-term.
-            env.storage().persistent().extend_ttl(&payment_key, 157_680_000, 315_360_000);
+            payment_ids.push_back(id_bytes.clone());
 
-            // Emit PaymentCreated event — one per batch entry.
             env.events().publish(
-                (soroban_sdk::Symbol::new(&env, "PaymentCreated"),),
-                (
-                    id_bytes.clone(),
-                    merchant.clone(),
+                (soroban_sdk::Symbol::new(&env, "BATCH"), soroban_sdk::Symbol::new(&env, "payment_created")),
+                (id_bytes, merchant.clone(), item.amount),
+            );
+        }
+
+        counter += count as u64;
+        env.storage().instance().set(&DataKey::Counter, &counter);
+
+        payment_ids
+    }
+
+    /// Admin: set or clear the optional MerchantRegistry contract address.
+    ///
+    /// Passing `Some(address)` enables merchant-approval gating in `create_batch`:
+    /// every merchant is checked against `MerchantRegistryClient::is_approved`
+    /// before the batch is processed.
+    pub fn set_registry(env: Env, registry: Option<Address>) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("contract not initialized"));
+        admin.require_auth();
+
+        match registry {
+            Some(addr) => env
+                .storage()
+                .instance()
+                .set(&DataKey::RegistryContract, &addr),
+            None => env.storage().instance().remove(&DataKey::RegistryContract),
+        }
+
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "BATCH"), soroban_sdk::Symbol::new(&env, "registry_updated")),
+            (registry,),
+        );
+    }
+
+    /// Return the configured MerchantRegistry address, if any.
+    pub fn get_registry(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::RegistryContract)
+    }
+
+    /// Return the configured minimum payment amount.
+    pub fn get_min_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinAmount)
+            .unwrap_or_else(|| panic!("contract not initialized"))
+    }
+
+    /// Return the configured maximum payment amount.
+    pub fn get_max_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAmount)
+            .unwrap_or_else(|| panic!("contract not initialized"))
+    }
+
+    /// Return the configured maximum batch size.
+    pub fn get_max_batch_size(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+    }
+
+    /// Return the total number of payments created so far.
+    pub fn get_payment_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Counter)
+            .unwrap_or(0u64)
+    }
+
+    /// Look up a single payment record by its ID.
+    pub fn get_payment(env: Env, id: BytesN<32>) -> Option<PaymentRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Payment(id))
+    }
+}

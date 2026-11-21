@@ -117,13 +117,12 @@ describe('AdminWaitlistController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('calls waitlistService.exportCsv with correct options', async () => {
+  it('calls waitlistService.exportCsv with correct options and returns the CSV', async () => {
     const res = {
       setHeader: jest.fn(),
-      send: jest.fn(),
     } as any;
 
-    await controller.exportCsv('GB', '2024-01-01', '2024-12-31', 'false', res);
+    const csv = await controller.exportCsv('GB', '2024-01-01', '2024-12-31', 'false', res);
 
     expect(waitlistService.exportCsv).toHaveBeenCalledWith({
       country: 'GB',
@@ -132,13 +131,16 @@ describe('AdminWaitlistController', () => {
       includeUnsubscribed: false,
     });
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/csv');
-    expect(res.send).toHaveBeenCalledWith('email,username\n"a@b.com","alice"');
+    expect(res.setHeader).toHaveBeenCalledWith(
+      'Content-Disposition',
+      'attachment; filename="waitlist-export.csv"',
+    );
+    expect(csv).toBe('email,username\n"a@b.com","alice"');
   });
 
   it('defaults includeUnsubscribed to false when not provided', async () => {
     const res = {
       setHeader: jest.fn(),
-      send: jest.fn(),
     } as any;
 
     await controller.exportCsv(undefined, undefined, undefined, undefined, res);
@@ -149,5 +151,17 @@ describe('AdminWaitlistController', () => {
       dateTo: undefined,
       includeUnsubscribed: false,
     });
+  });
+
+  it('propagates errors from waitlistService.exportCsv to the exception filter', async () => {
+    const res = {
+      setHeader: jest.fn(),
+    } as any;
+    const error = new Error('export failed');
+    (waitlistService.exportCsv as jest.Mock).mockRejectedValueOnce(error);
+
+    await expect(
+      controller.exportCsv('GB', undefined, undefined, undefined, res),
+    ).rejects.toThrow('export failed');
   });
 });
