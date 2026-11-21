@@ -21,6 +21,15 @@ export class WaitlistEntry {
   @Column({ nullable: true })
   referralCode: string;
 
+  @Column({ default: 0 })
+  referrals: number;
+
+  @Column({ nullable: true })
+  businessName: string;
+
+  @Column({ nullable: true })
+  country: string;
+
   @Column({ default: false })
   unsubscribed: boolean;
 

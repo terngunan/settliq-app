@@ -10,8 +10,8 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { MerchantApiKeyService } from './merchant-api-key.service';
+import { AuthService } from '../auth/auth.service';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -26,7 +26,7 @@ interface AuthenticatedRequest extends Request {
 @Controller('merchants/api-key')
 @UseGuards(JwtAuthGuard)
 export class MerchantApiKeyController {
-  constructor(private readonly merchantApiKeyService: MerchantApiKeyService) {}
+  constructor(private readonly authService: AuthService) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -35,7 +35,7 @@ export class MerchantApiKeyController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async generate(@Req() req: AuthenticatedRequest) {
     const merchantId = this.resolveMerchantId(req);
-    return this.merchantApiKeyService.generateApiKey(merchantId);
+    return this.authService.generateApiKey(merchantId);
   }
 
   @Post('rotate')
@@ -45,7 +45,7 @@ export class MerchantApiKeyController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async rotate(@Req() req: AuthenticatedRequest) {
     const merchantId = this.resolveMerchantId(req);
-    return this.merchantApiKeyService.rotateApiKey(merchantId);
+    return this.authService.rotateApiKey(merchantId);
   }
 
   @Delete()
@@ -55,7 +55,7 @@ export class MerchantApiKeyController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async revoke(@Req() req: AuthenticatedRequest) {
     const merchantId = this.resolveMerchantId(req);
-    await this.merchantApiKeyService.revokeApiKey(merchantId);
+    await this.authService.revokeApiKey(merchantId);
   }
 
   private resolveMerchantId(req: AuthenticatedRequest): string {

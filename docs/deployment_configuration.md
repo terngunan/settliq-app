@@ -95,6 +95,31 @@ then the multi-argument ones. `merchant_registry` is deployed before
 Contract IDs for every deployed contract are written to the job summary and
 exposed as job outputs named `<contract>_id`.
 
+## Cloudflare Worker (statuspage)
+
+The statuspage Worker in `monitoring/statuspage/` is deployed with Wrangler from
+`monitoring/statuspage/wrangler.toml`. That committed config intentionally does
+**not** contain an `account_id`; a hardcoded value (or a placeholder such as
+`YOUR_CLOUDFLARE_ACCOUNT_ID`) would be treated literally by `wrangler deploy`
+and break authentication.
+
+Instead, the account is supplied at deploy time via the
+`CLOUDFLARE_ACCOUNT_ID` environment variable, which Wrangler reads
+automatically. In CI/CD, set it from a repository secret:
+
+```yaml
+- name: Deploy statuspage Worker
+  working-directory: monitoring/statuspage
+  env:
+    CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  run: npx wrangler deploy
+```
+
+For local deploys, export the same variables (or run `wrangler login`) before
+`npx wrangler deploy`. Verify the config without deploying using
+`npx wrangler deploy --dry-run`.
+
 ## Related
 
 - [`escrow_upgrade_procedure.md`](escrow_upgrade_procedure.md) — upgrading

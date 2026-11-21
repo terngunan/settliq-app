@@ -1,78 +1,55 @@
-# Escrow Contract Upgrade Procedure
+# Upgrade the payment escrow contract
 
-This document describes how to upgrade the `payment_escrow` contract using its
-two-step, timelocked upgrade mechanism. The contract does **not** expose a
-single `upgrade` function. Instead, an admin must first *schedule* the upgrade,
-wait out the timelock delay, and then *apply* it. This gives affected parties
-time to notice and react before new code can control escrowed funds.
+Use the existing escrow contract ID and a storage-compatible replacement WASM. The upgrade preserves the instance and its stored data. Check any required migration before scheduling.
 
-## Prerequisites
+## Build and upload
 
-- The new contract WASM has been built and its hash (`<NEW_WASM_HASH>`) is known.
-- You control the admin address (`<ADMIN_ADDRESS>`) configured on the contract.
-- The Soroban CLI is installed and configured for the target network.
-
-## Step 1 — Schedule the upgrade
-
-Call `schedule_upgrade` with the admin address and the new WASM hash:
+From the repository root, set `NETWORK` to the configured Stellar network, `ADMIN` to the signing identity for the escrow administrator, and `ESCROW_ID` to the deployed contract ID. The example uses an account administrator. For a multisig administrator, authorize the calls through its approval process.
 
 ```bash
-soroban contract invoke \
-  --id <EXISTING_CONTRACT_ID> \
-  -- \
-  schedule_upgrade \
-  --caller <ADMIN_ADDRESS> \
-  --new_wasm_hash <NEW_WASM_HASH>
+cd settliq_contracts
+cargo build --release --target wasm32v1-none -p payment-escrow
+ADMIN_ADDRESS=$(stellar keys address "$ADMIN")
+WASM_HASH=$(stellar contract upload --network "$NETWORK" --source-account "$ADMIN" \
+  --wasm target/wasm32v1-none/release/payment_escrow.wasm)
+
+escrow() {
+  stellar contract invoke --id "$ESCROW_ID" --network "$NETWORK" \
+    --source-account "$ADMIN" -- "$@"
+}
 ```
 
-This records the pending upgrade and emits an `upgrade_scheduled` event
-containing the new WASM hash and the ledger at which the upgrade becomes
-applicable (`apply_ledger`). The upgrade is **not** applied yet.
+## Schedule and inspect
 
-## Step 2 — Verify the timelock window
-
-The upgrade cannot be applied until the configured timelock delay has elapsed.
-The delay is stored in `UpgradeDelayLedgers` (default `17280` ledgers, roughly
-one day). The `apply_ledger` value emitted by `schedule_upgrade` is
-`current_ledger + delay`.
-
-Before applying, confirm the current ledger sequence is greater than or equal
-to `apply_ledger`. You can read the current ledger sequence from the network
-(e.g. via `soroban ledger latest` or your RPC provider) and compare it against
-the `apply_ledger` reported in the `upgrade_scheduled` event. If the timelock
-has not elapsed, `apply_upgrade` will revert with
-`Upgrade timelock has not elapsed`.
-
-## Step 3 — Apply the upgrade
-
-Once the timelock has elapsed, call `apply_upgrade` with the admin address:
+Read the current proposal first. Scheduling again replaces the pending hash and restarts the cooldown.
 
 ```bash
-soroban contract invoke \
-  --id <EXISTING_CONTRACT_ID> \
-  -- \
-  apply_upgrade \
-  --caller <ADMIN_ADDRESS>
+escrow get_pending_upgrade
+escrow schedule_upgrade --caller "$ADMIN_ADDRESS" --new_wasm_hash "$WASM_HASH"
+escrow get_pending_upgrade
 ```
 
-This clears the pending upgrade, increments the stored contract `Version`, and
-installs the new WASM via `update_current_contract_wasm`. It reverts with
-`No pending upgrade` if nothing was scheduled.
+Verify that the returned pair contains the uploaded hash. Its second value is the first ledger sequence at which the admin can apply it. The default delay is 17,280 ledgers (about 24 hours at five seconds per ledger). Use the returned ledger as the deadline for the cooldown.
 
-## Cancelling a scheduled upgrade
+## Apply after the cooldown
 
-If the upgrade should not proceed (e.g. a defect was found during the timelock
-window), cancel it before applying by calling `cancel_upgrade` with the admin
-address:
+Once the network reaches the apply ledger, check the pending hash and ledger again before submitting the transaction.
 
 ```bash
-soroban contract invoke \
-  --id <EXISTING_CONTRACT_ID> \
-  -- \
-  cancel_upgrade \
-  --caller <ADMIN_ADDRESS>
+escrow get_pending_upgrade
+escrow apply_upgrade --caller "$ADMIN_ADDRESS"
+escrow get_pending_upgrade
 ```
 
-This removes the pending upgrade and emits an `upgrade_cancelled` event. It
-reverts with `No pending upgrade` if nothing was scheduled. After cancelling,
-you may schedule a new upgrade from Step 1.
+Confirm that the apply transaction succeeded and that the pending upgrade is now empty (`null`).
+
+## Emergency cancellation
+
+If the hash is unexpected or the release must be withdrawn, the admin can cancel any time before application, including after the cooldown expires.
+
+```bash
+escrow cancel_upgrade --caller "$ADMIN_ADDRESS"
+escrow get_pending_upgrade
+```
+
+Confirm the pending upgrade is empty. To retry, schedule the intended hash and wait for its new apply ledger.
