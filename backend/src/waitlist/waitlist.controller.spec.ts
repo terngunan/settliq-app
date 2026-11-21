@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { WaitlistController } from './waitlist.controller';
 import { WaitlistService } from './waitlist.service';
 
@@ -89,13 +90,35 @@ describe('WaitlistController', () => {
   // ── getPosition ───────────────────────────────────────────────────────
 
   describe('getPosition', () => {
-    it('delegates to service.getPosition with the provided email', async () => {
+    it('delegates to service.getPosition with email and token', async () => {
       service.getPosition.mockResolvedValue({ position: 5 });
 
-      const result = await controller.getPosition('founder@example.com');
+      const result = await controller.getPosition('founder@example.com', 'tok-abc');
 
-      expect(service.getPosition).toHaveBeenCalledWith('founder@example.com');
+      expect(service.getPosition).toHaveBeenCalledWith('founder@example.com', 'tok-abc');
       expect(result).toEqual({ position: 5 });
+    });
+
+    it('throws BadRequestException when token is omitted', async () => {
+      await expect(
+        controller.getPosition('founder@example.com', undefined as any),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(service.getPosition).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when email is omitted', async () => {
+      await expect(
+        controller.getPosition(undefined as any, 'tok-abc'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(service.getPosition).not.toHaveBeenCalled();
+    });
+
+    it('throws UnauthorizedException when token does not match', async () => {
+      service.getPosition.mockRejectedValue(new UnauthorizedException('Invalid token'));
+
+      await expect(
+        controller.getPosition('founder@example.com', 'wrong-token'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 

@@ -117,6 +117,19 @@ pub struct PaymentEscrowContractUpdatedEvent {
     pub new_value: Option<Address>,
 }
 
+// ── TTL constants (issue #260) ──────────────────────────────────────────────
+//
+// Payment confirmation records live in persistent storage and are subject to
+// Soroban rent reclamation. Slow on-chain confirmation or network delays can
+// leave a payment in-flight for many ledgers, so we bump the entry's TTL on
+// every write and read to keep the record alive until it reaches its required
+// confirmation threshold (or a terminal state).
+
+/// Minimum remaining TTL (in ledgers) we want on a PaymentState entry.
+const PAYMENT_STATE_TTL_THRESHOLD: u32 = 100_000;
+/// TTL (in ledgers) we extend a PaymentState entry to when below threshold.
+const PAYMENT_STATE_TTL_EXTEND_TO: u32 = 500_000;
+
 // ── contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -161,12 +174,12 @@ impl StellarConfirmationsContract {
         // This is the single cross-contract lookup for the whole invocation;
         // the threshold-crossing branch below reuses this verification rather
         // than issuing a second identical `get_payment` call (issue #108).
-        if let Some(escrow_address) = env
+        let escrow_address = env
             .storage()
             .instance()
-            .get::<_, Address>(&DataKey::PaymentEscrowContract)
-        {
-            let escrow_client = PaymentEscrowClient::new(&env, &escrow_address);
+            .get::<_, Address>(&DataKey::PaymentEscrowContract);
+        if let Some(ref escrow_address) = escrow_address {
+            let escrow_client = PaymentEscrowClient::new(&env, escrow_address);
             let payment = escrow_client.get_payment(&payment_id);
             assert!(payment.amount == amount, "amount mismatch with payment_escrow record");
             assert!(payment.merchant == merchant, "merchant mismatch with payment_escrow record");
@@ -190,46 +203,117 @@ impl StellarConfirmationsContract {
         // Guard: already settling — idempotent no-op after threshold
         assert!(!state.settling, "payment already settling");
 
-        // Guard: already failed — terminal state, cannot resume confirming
+        // Guard: already failed — terminal state, no further confirmations
         assert!(!state.failed, "payment already failed");
 
-        // Increment confirmation counter
-        let new_confs = state.confs.checked_add(1).expect("overflow");
-
-        // Record first-seen ledger for auditability (only on first confirmation)
-        if state.first_ledger == 0 {
+        // Snapshot required confirmations on first confirmation so a later
+        // admin change to ConfirmationCount does not retroactively affect
+        // in-flight payments.
+        if state.confs == 0 {
+            let required: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ConfirmationCount)
+                .unwrap_or(1);
+            state.required_confs = required;
             state.first_ledger = ledger_seq;
         }
 
-        // Record last-seen ledger for the monotonicity check above
+        state.confs += 1;
         state.last_ledger = ledger_seq;
-        state.confs = new_confs;
 
-        // Snapshot the required confirmation count at first confirmation so
-        // later admin changes to the global ConfirmationCount don't retroactively
-        // move the threshold for payments already accumulating confirmations.
-        let required: u32 = if state.required_confs == 0 {
-            let current: u32 =
-                env.storage().instance().get(&DataKey::ConfirmationCount).unwrap();
-            state.required_confs = current;
-            current
-        } else {
-            state.required_confs
-        };
+        let required = state.required_confs;
 
-        // Save consolidated payment state (issue #74)
-        Self::save_payment_state(&env, &payment_id, &state);
-
+        // Emit per-confirmation event
         env.events().publish(
-            ("STELLAR_CONFS", "confirmation_recorded"),
+            ("confirmation_recorded",),
             ConfirmationRecordedEvent {
                 payment_id: payment_id.clone(),
                 ledger_seq,
-                confirmations: new_confs,
+                confirmations: state.confs,
                 required,
             },
         );
 
-        // Transition to Set
+        // Threshold-crossing branch: release escrow funds BEFORE persisting the
+        // terminal `settling` state. If the cross-contract `release` call fails
+        // or reverts (e.g. escrow paused, insufficient funds, already released),
+        // the panic propagates and the whole transaction reverts atomically —
+        // the confirmation is never marked settling while funds remain locked
+        // (issue #261).
+        if state.confs >= required {
+            if let Some(ref escrow_address) = escrow_address {
+                let escrow_client = PaymentEscrowClient::new(&env, escrow_address);
+                // Panics (reverting the tx) if the release call fails.
+                escrow_client.release(&payment_id);
+                // Verify the release actually took effect before committing the
+                // terminal state. A no-op or partial release must not be treated
+                // as success.
+                let payment = escrow_client.get_payment(&payment_id);
+                assert!(
+                    payment.status == PaymentEscrowStatus::Released,
+                    "escrow release did not complete"
+                );
+            }
 
-/* … truncated 5995 chars — edit only what you need near the top … */
+            // Only now — after a successful (or not-required) release — do we
+            // persist the terminal settling state.
+            state.settling = true;
+            Self::save_payment_state(&env, &payment_id, &state);
+
+            env.events().publish(
+                ("settlement_authorised",),
+                SettlementAuthorisedEvent {
+                    payment_id: payment_id.clone(),
+                    ledger_seq,
+                    amount,
+                    merchant,
+                },
+            );
+        } else {
+            Self::save_payment_state(&env, &payment_id, &state);
+        }
+
+        state.confs
+    }
+
+    // ── internal helpers ────────────────────────────────────────────────────
+
+    fn require_admin(env: &Env, caller: &Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        assert!(caller == &admin, "caller is not admin");
+    }
+
+    fn load_payment_state(env: &Env, payment_id: &BytesN<32>) -> PaymentConfirmationState {
+        let key = DataKey::PaymentState(payment_id.clone());
+        let state = env
+            .storage()
+            .persistent()
+            .get::<_, PaymentConfirmationState>(&key)
+            .unwrap_or(PaymentConfirmationState {
+                confs: 0,
+                first_ledger: 0,
+                last_ledger: 0,
+                required_confs: 0,
+                settling: false,
+                failed: false,
+            });
+        // Bump TTL on read so in-flight records survive slow confirmation (issue #260).
+        env.storage().persistent().extend_ttl(
+            &key,
+            PAYMENT_STATE_TTL_THRESHOLD,
+            PAYMENT_STATE_TTL_EXTEND_TO,
+        );
+        state
+    }
+
+    fn save_payment_state(env: &Env, payment_id: &BytesN<32>, state: &PaymentConfirmationState) {
+        let key = DataKey::PaymentState(payment_id.clone());
+        env.storage().persistent().set(&key, state);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PAYMENT_STATE_TTL_THRESHOLD,
+            PAYMENT_STATE_TTL_EXTEND_TO,
+        );
+    }
+}
