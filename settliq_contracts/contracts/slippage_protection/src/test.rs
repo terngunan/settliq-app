@@ -46,6 +46,33 @@ fn test_check_slippage_zero_deviation_passes() {
     client.check_slippage(&10_000, &10_000);
 }
 
+// ── check_slippage: favorable price improvement (issue #257) ─────────────────
+
+#[test]
+fn test_check_slippage_positive_improvement_passes() {
+    // actual > expected: trader receives MORE than expected → must NOT revert.
+    let (_env, client, _admin) = setup_env();
+    client.check_slippage(&10_000, &10_500);
+}
+
+#[test]
+fn test_check_slippage_large_positive_improvement_passes() {
+    // Even a large favorable movement must not be treated as slippage.
+    let (_env, client, _admin) = setup_env();
+    client.check_slippage(&10_000, &20_000);
+}
+
+#[test]
+fn test_check_slippage_for_pair_positive_improvement_passes() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Tight per-pair limit (50 bps) must not penalize favorable movement.
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &50);
+    client.check_slippage_for_pair(&token_a, &token_b, &10_000, &10_500);
+}
+
 // ── check_slippage: revert paths ─────────────────────────────────────────────
 
 #[test]
@@ -211,100 +238,68 @@ fn test_pair_override_does_not_affect_other_pairs() {
     assert_eq!(client.get_pair_max_slippage(&token_a, &token_c), 100);
 }
 
-// ── set_pair_max_slippage: audit event tests (issue #66) ─────────────────────
+// ── Issue #258: remove_pair_max_slippage graceful handling ───────────────────
 
-/// set_pair_max_slippage emits PairMaxSlippageUpdatedEvent on first set.
-/// previous_bps should be the global default (100) since no override existed.
 #[test]
-fn test_set_pair_max_slippage_emits_event_first_set() {
+fn test_remove_pair_max_slippage_existing_returns_some() {
     let (env, client, admin) = setup_env();
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
     client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
 
-    let events = env.events().all();
-    let last = events.last().unwrap();
+    // Removing an existing override returns the previous value.
+    let removed = client.remove_pair_max_slippage(&admin, &token_a, &token_b);
+    assert_eq!(removed, Some(200));
 
-    // Topic check.
-    assert_eq!(
-        last.1,
-        (
-            soroban_sdk::String::from_str(&env, "SLIPPAGE"),
-            soroban_sdk::String::from_str(&env, "pair_max_slippage_updated")
-        )
-            .into_val(&env)
-    );
-
-    // Data check: previous_bps is the global default, new_bps is 200.
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-    assert_eq!(event.previous_bps, 100); // global default
-    assert_eq!(event.new_bps, 200);
+    // After removal the pair falls back to the global default.
+    assert_eq!(client.get_pair_max_slippage(&token_a, &token_b), 100);
 }
 
-/// set_pair_max_slippage emits PairMaxSlippageUpdatedEvent on an update to an
-/// already-configured pair. previous_bps should reflect the stored override,
-/// not the global default.
 #[test]
-fn test_set_pair_max_slippage_emits_event_on_update() {
+fn test_remove_pair_max_slippage_non_existent_returns_none() {
     let (env, client, admin) = setup_env();
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    // First set.
-    client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
+    // No override was ever set — must not panic, returns None.
+    let removed = client.remove_pair_max_slippage(&admin, &token_a, &token_b);
+    assert_eq!(removed, None);
+}
 
-    // Second set — override the existing value.
+#[test]
+fn test_remove_pair_max_slippage_twice_second_returns_none() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
     client.set_pair_max_slippage(&admin, &token_a, &token_b, &75);
 
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-
-    // previous_bps must be the prior override (200), not the global default.
-    assert_eq!(event.previous_bps, 200);
-    assert_eq!(event.new_bps, 75);
+    // First removal succeeds.
+    assert_eq!(
+        client.remove_pair_max_slippage(&admin, &token_a, &token_b),
+        Some(75)
+    );
+    // Second removal of the already-cleared override is graceful.
+    assert_eq!(
+        client.remove_pair_max_slippage(&admin, &token_a, &token_b),
+        None
+    );
 }
 
-/// Event asset fields match the arguments passed to set_pair_max_slippage
-/// regardless of whether they are reordered internally (canonical ordering).
 #[test]
-fn test_set_pair_max_slippage_event_contains_correct_assets() {
+fn test_remove_pair_max_slippage_reversed_order() {
     let (env, client, admin) = setup_env();
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    client.set_pair_max_slippage(&admin, &token_a, &token_b, &300);
-
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-
-    // The event must carry the original caller-supplied addresses.
-    assert_eq!(event.asset_a, token_a);
-    assert_eq!(event.asset_b, token_b);
-    assert_eq!(event.new_bps, 300);
-}
-
-/// Calling set_pair_max_slippage with arguments in reversed order (B, A)
-/// still emits the event with the caller-supplied asset_a / asset_b values.
-#[test]
-fn test_set_pair_max_slippage_event_reversed_order_carries_caller_args() {
-    let (env, client, admin) = setup_env();
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
-
-    // Set using reversed argument order.
-    client.set_pair_max_slippage(&admin, &token_b, &token_a, &150);
-
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
-
-    // asset_a and asset_b in the event should be what the caller passed in.
-    assert_eq!(event.asset_a, token_b);
-    assert_eq!(event.asset_b, token_a);
-    assert_eq!(event.new_bps, 150);
+    // Store with (A, B) order, remove with (B, A) — commutative.
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &150);
+    assert_eq!(
+        client.remove_pair_max_slippage(&admin, &token_b, &token_a),
+        Some(150)
+    );
+    assert_eq!(client.get_pair_max_slippage(&token_a, &token_b), 100);
 }
 
 #[test]

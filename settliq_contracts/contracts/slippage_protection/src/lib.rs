@@ -118,6 +118,10 @@ impl SlippageProtectionContract {
         if bps > 10_000 {
             panic!("bps must be <= 10000");
         }
+        assert!(
+            asset_a != asset_b,
+            "asset_a and asset_b must be distinct"
+        );
         let (k1, k2) = Self::canonical_pair(&env, asset_a.clone(), asset_b.clone());
 
         // Read the previous value (falls back to global default when no
@@ -144,23 +148,25 @@ impl SlippageProtectionContract {
     }
 
     /// Admin-only: remove a per-pair slippage override to restore the pair to the global default.
-    /// Returns the slippage bps value that was removed, or panics if no override exists.
+    /// Returns `Some(bps)` with the removed override value when one existed, or
+    /// `None` when no override was set for the pair (no panic, no event emitted).
     pub fn remove_pair_max_slippage(
         env: Env,
         caller: soroban_sdk::Address,
         asset_a: soroban_sdk::Address,
         asset_b: soroban_sdk::Address,
-    ) -> u32 {
+    ) -> Option<u32> {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         let (k1, k2) = Self::canonical_pair(&env, asset_a.clone(), asset_b.clone());
 
         let key = DataKey::PairMaxSlippageBps(k1, k2);
-        let removed_bps: u32 = env
-            .storage()
-            .instance()
-            .get(&key)
-            .expect("no pair max slippage override exists");
+        let removed_bps: Option<u32> = env.storage().instance().get(&key);
+
+        let removed_bps = match removed_bps {
+            Some(bps) => bps,
+            None => return None,
+        };
 
         env.storage().instance().remove(&key);
 
@@ -173,7 +179,7 @@ impl SlippageProtectionContract {
             },
         );
 
-        removed_bps
+        Some(removed_bps)
     }
 
     pub fn get_max_slippage(env: Env) -> u32 {
@@ -249,42 +255,25 @@ impl SlippageProtectionContract {
     }
 
     fn assert_within_tolerance(env: &Env, expected: i128, actual: i128, max_bps: u32) {
-        if expected <= 0 {
-            panic!("expected must be > 0");
+        if expected == 0 {
+            panic!("expected must be non-zero");
         }
-        if actual <= 0 {
-            panic!("actual must be > 0");
-        }
-
-        // deviation_bps = abs(expected - actual) * 10_000 / expected
-        let diff = if actual >= expected {
+        let diff = if actual > expected {
             actual - expected
         } else {
             expected - actual
         };
-
-        let deviation_bps_i128 = diff
-            .checked_mul(10_000)
-            .expect("overflow")
-            .checked_div(expected)
-            .expect("div by zero");
-
-        // Saturate instead of truncating-casting: an i128 deviation that
-        // overflows u32 is always far beyond any sane max_bps, so clamping
-        // to u32::MAX preserves the "reject extreme deviation" behavior
-        // instead of silently wrapping into a small, passable value.
-        let deviation_bps: u32 = deviation_bps_i128.try_into().unwrap_or(u32::MAX);
-
-        if deviation_bps > max_bps {
+        let diff_bps = diff.saturating_mul(10_000) / expected.abs();
+        if diff_bps > max_bps as i128 {
             env.events().publish(
-                ("SLIPPAGE", "exceeded"),
+                ("SLIPPAGE_PROTECTION", "slippage_exceeded"),
                 SlippageExceededEvent {
                     expected,
                     actual,
                     max_bps,
                 },
             );
-            panic!("SlippageExceeded");
+            panic!("slippage exceeded");
         }
     }
 }
