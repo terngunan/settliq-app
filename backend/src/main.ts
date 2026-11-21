@@ -17,10 +17,25 @@ async function bootstrap() {
   // Issue #48: Enable CORS so browser clients on different origins (e.g. the
   // merchant dashboard or customer waitlist landing page) can reach the API.
   // Allowed origins are configurable via CORS_ALLOWED_ORIGINS (comma-separated).
-  app.enableCors({
-    origin: process.env.CORS_ALLOWED_ORIGINS?.split(',') ?? '*',
-    credentials: true,
-  });
+  // Issue #207: Per the Fetch/CORS spec, `Access-Control-Allow-Origin: *` must
+  // never be combined with `Access-Control-Allow-Credentials: true`. Only enable
+  // credentials when explicit non-wildcard origins are configured; otherwise
+  // fall back to a wildcard origin without credentials.
+  const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+
+  if (allowedOrigins && allowedOrigins.length > 0) {
+    app.enableCors({
+      origin: allowedOrigins,
+      credentials: true,
+    });
+  } else {
+    app.enableCors({
+      origin: '*',
+      credentials: false,
+    });
+  }
 
   const config = new DocumentBuilder()
     .setTitle('Settliq API')
@@ -36,4 +51,3 @@ async function bootstrap() {
 }
 
 bootstrap();
-

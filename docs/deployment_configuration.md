@@ -1,6 +1,6 @@
 # Deployment configuration
 
-`.github/workflows/deploy.yml` deploys all 14 workspace contracts to testnet on
+`.github/workflows/deploy.yml` deploys all 16 workspace contracts to testnet on
 every merge to `main`, and to mainnet on a `v*` tag. Ten of those contracts take
 `__constructor` arguments, so the workflow reads them from GitHub Actions
 **variables** (Settings → Secrets and variables → Actions → Variables).
@@ -13,11 +13,22 @@ than letting an opaque CLI error surface halfway through a partial deploy.
 > variables rather than secrets. The only secrets involved remain
 > `TESTNET_DEPLOY_SECRET` and `MAINNET_DEPLOY_SECRET`, the deployer keypairs.
 
+## Workspace contracts
+
+The `settliq_contracts` workspace contains 16 contracts, all deployed by the
+workflow:
+
+`admin_auth`, `admin_timelock`, `batch_payments`, `fee_calculator`,
+`fee_distributor`, `liquidity_router`, `merchant_registry`, `multisig_admin`,
+`payment_escrow`, `payment_request`, `platform_stats`, `rbac_access`,
+`reconciliation`, `settlement_ledger`, `slippage_protection` and
+`stellar_confirmations`.
+
 ## Required variables
 
 | Variable (per-network prefix) | Used by | Example |
 | --- | --- | --- |
-| `…_DEPLOY_ADMIN` | `admin_timelock`, `merchant_registry`, `reconciliation`, `settlement_ledger`, `slippage_protection`, `stellar_confirmations`, `fee_calculator`, `fee_distributor`, `payment_escrow` | `GA…` |
+| `…_DEPLOY_ADMIN` | `admin_timelock`, `merchant_registry`, `reconciliation`, `settlement_ledger`, `slippage_protection`, `stellar_confirmations`, `fee_calculator`, `fee_distributor`, `payment_escrow`, `batch_payments`, `liquidity_router` | `GA…` |
 | `…_RBAC_SUPER_ADMIN` | `rbac_access` (`super_admin`) | `GA…` |
 | `…_XLM_TOKEN` | `payment_escrow` | `CA…` |
 | `…_USDC_TOKEN` | `payment_escrow`, `fee_distributor` | `CA…` |
@@ -31,6 +42,9 @@ than letting an opaque CLI error surface halfway through a partial deploy.
 | `…_EMERGENCY_TREASURY` | `payment_escrow` | `GA…` |
 | `…_EMERGENCY_COOLDOWN_LEDGERS` | `payment_escrow` | `17280` |
 | `…_CONFIRMATION_COUNT` | `stellar_confirmations` | `3` |
+| `…_BATCH_MAX_BATCH_SIZE` | `batch_payments` (`max_batch_size`) | `100` |
+| `…_BATCH_MAX_AMOUNT_PER_PAYMENT` | `batch_payments` (`max_amount_per_payment`) | `1000000000` |
+| `…_BATCH_MAX_TOTAL_BATCH_AMOUNT` | `batch_payments` (`max_total_batch_amount`) | `10000000000` |
 
 ### Optional
 
@@ -58,10 +72,19 @@ Two constructors take container types, which the Stellar CLI expects as JSON.
 ]
 ```
 
+## Contracts with constructor arguments
+
+`batch_payments` takes five constructor arguments: `admin` (from
+`…_DEPLOY_ADMIN`), `max_batch_size` (`…_BATCH_MAX_BATCH_SIZE`),
+`max_amount_per_payment` (`…_BATCH_MAX_AMOUNT_PER_PAYMENT`) and
+`max_total_batch_amount` (`…_BATCH_MAX_TOTAL_BATCH_AMOUNT`).
+
+`liquidity_router` takes a single `admin` argument, supplied from
+`…_DEPLOY_ADMIN`.
+
 ## Contracts with no constructor
 
-`batch_payments`, `liquidity_router` and `payment_request` take no constructor
-arguments and need no configuration.
+`payment_request` takes no constructor arguments and needs no configuration.
 
 ## Deploy order
 
@@ -71,6 +94,31 @@ then the multi-argument ones. `merchant_registry` is deployed before
 
 Contract IDs for every deployed contract are written to the job summary and
 exposed as job outputs named `<contract>_id`.
+
+## Cloudflare Worker (statuspage)
+
+The statuspage Worker in `monitoring/statuspage/` is deployed with Wrangler from
+`monitoring/statuspage/wrangler.toml`. That committed config intentionally does
+**not** contain an `account_id`; a hardcoded value (or a placeholder such as
+`YOUR_CLOUDFLARE_ACCOUNT_ID`) would be treated literally by `wrangler deploy`
+and break authentication.
+
+Instead, the account is supplied at deploy time via the
+`CLOUDFLARE_ACCOUNT_ID` environment variable, which Wrangler reads
+automatically. In CI/CD, set it from a repository secret:
+
+```yaml
+- name: Deploy statuspage Worker
+  working-directory: monitoring/statuspage
+  env:
+    CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  run: npx wrangler deploy
+```
+
+For local deploys, export the same variables (or run `wrangler login`) before
+`npx wrangler deploy`. Verify the config without deploying using
+`npx wrangler deploy --dry-run`.
 
 ## Related
 

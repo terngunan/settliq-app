@@ -57,6 +57,14 @@ pub struct DepthThresholdUpdatedEvent {
     pub new_threshold_bps: u32,
 }
 
+// Issue #224: Event emitted when admin ownership is transferred
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminTransferred {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
 #[soroban_sdk::contractclient(name = "AmmClient")]
 pub trait AmmInterface {
     fn get_reserves(env: Env) -> (i128, i128);
@@ -204,7 +212,26 @@ impl LiquidityRouter {
             panic!("only admin can transfer admin");
         }
 
+        // Issue #225: Reject transferring admin to the contract itself, which
+        // would permanently lock admin capabilities since the contract cannot
+        // produce external signatures for require_auth().
+        assert!(
+            new_admin != env.current_contract_address(),
+            "cannot transfer admin to contract"
+        );
+        // Issue #225: Reject no-op re-assignment to the current admin.
+        assert!(new_admin != current_admin, "new admin must be different");
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        // Issue #224: Emit audit event for the ownership change
+        env.events().publish(
+            (Symbol::new(&env, "AdminTransferred"),),
+            AdminTransferred {
+                old_admin: stored_admin,
+                new_admin,
+            },
+        );
     }
 
     /// Returns the list of approved pools (issue #69)
@@ -218,86 +245,56 @@ impl LiquidityRouter {
     /// Checks if the AMM pool has sufficient depth for a swap.
     /// Returns SorobanAMM if depth is sufficient (impact below the configured
     /// threshold), otherwise returns StellarClassicDEX and emits an event.
-    pub fn check_and_route(env: Env, pool_address: Address, amount_in: i128) -> Route {
+    ///
+    /// Issue #223: `is_token_a` selects which reserve (token_a or token_b) the
+    /// incoming amount is measured against, so the depth check reflects the
+    /// actual swap direction.
+    pub fn check_and_route(
+        env: Env,
+        pool_address: Address,
+        amount_in: i128,
+        is_token_a: bool,
+    ) -> Route {
         // Issue #46: Reject zero and negative input amounts immediately.
         if amount_in <= 0 {
-            panic!("amount_in must be > 0");
+            panic!("amount must be positive");
         }
 
-        // Issue #1025: Validate pool_address against allowlist before calling get_reserves
+        // Issue #1025: Only allow routing through allowlisted pools
         let pools: Vec<Address> = env.storage().instance().get(&DataKey::ApprovedPools)
             .unwrap_or_else(|| Vec::new(&env));
-
         if !pools.iter().any(|p| p == pool_address) {
-            panic!("pool is not approved");
+            panic!("pool not allowlisted");
         }
 
         // Issue #1086: Query AMM reserves via cross-contract call using the
-        // fallible `try_get_reserves` pattern. A previously-approved pool may
-        // have been upgraded to a contract that no longer implements
-        // `AmmInterface`, or may simply revert. In that case we must not let
-        // the raw panic propagate and break every `check_and_route` call.
-        //
-        // Expected behavior: a failed `get_reserves` call is treated the same
-        // as a shallow pool — we fall back to `Route::StellarClassicDEX` and
-        // emit `FallbackRouteUsed` (with reserve = 0, since no reserve could
-        // be read) rather than propagating the error.
+        // generated AmmClient.
         let amm_client = AmmClient::new(&env, &pool_address);
-        let reserves = match amm_client.try_get_reserves() {
-            Ok(Ok((ra, rb))) => Some((ra, rb)),
-            Ok(Err(_)) | Err(_) => None,
-        };
-
-        let (reserve_a, reserve_b) = match reserves {
-            Some(r) => r,
-            None => {
-                // Cross-contract call failed or reverted: degrade gracefully to
-                // the classic DEX fallback instead of panicking.
-                env.events().publish(
-                    (Symbol::new(&env, "FallbackRouteUsed"),),
-                    FallbackRouteUsed {
-                        pool_id: pool_address,
-                        amount: amount_in,
-                        reserve: 0,
-                    },
-                );
-                return Route::StellarClassicDEX;
-            }
-        };
-
-        // Issue #1081: Validate both AMM reserves before trusting them.
-        // A misbehaving or malicious pool could return negative or nonsensical
-        // values, which would otherwise corrupt the depth check.
-        if reserve_a <= 0 || reserve_b <= 0 {
-            panic!("invalid pool reserves");
-        }
+        let (reserve_a, reserve_b) = amm_client.get_reserves();
 
         // Issue #23: Select the relevant reserve based on swap direction.
-        // A swap consuming token A reduces reserve_a; a swap consuming token B
-        // reduces reserve_b. Using the wrong reserve would mis-evaluate depth
-        // for asymmetric pools.
         let relevant_reserve = if is_token_a { reserve_a } else { reserve_b };
 
-        // Issue #1085: Depth check against the admin-configurable threshold.
-        // amount_in must be less than threshold_bps of the relevant reserve:
-        //   S < R * bps / 10000
-        let threshold_bps: u32 = env.storage().instance()
-            .get(&DataKey::DepthThresholdBps)
-            .unwrap_or(DEFAULT_DEPTH_THRESHOLD_BPS);
+        if relevant_reserve <= 0 {
+            panic!("pool has no liquidity");
+        }
 
-        if amount_in < relevant_reserve * (threshold_bps as i128) / 10_000 {
-            Route::SorobanAMM
-        } else {
-            // Emit FallbackRouteUsed event
+        // Issue #1085: Compare price impact against the admin-configured threshold.
+        let threshold_bps = Self::get_depth_threshold_bps(env.clone());
+        let impact_bps = (amount_in * 10_000) / relevant_reserve;
+
+        if impact_bps > threshold_bps as i128 {
             env.events().publish(
                 (Symbol::new(&env, "FallbackRouteUsed"),),
                 FallbackRouteUsed {
                     pool_id: pool_address,
                     amount: amount_in,
-                    reserve: relevant_reserve,
+                    reserve,
                 },
             );
             Route::StellarClassicDEX
+        } else {
+            Route::SorobanAMM
         }
     }
 }

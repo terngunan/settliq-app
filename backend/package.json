@@ -11,9 +11,10 @@
     "start:prod": "node dist/main",
     "test": "jest",
     "test:cov": "jest --coverage",
-    "migration:run": "typeorm migration:run -d dist/data-source.js",
-    "migration:revert": "typeorm migration:revert -d dist/data-source.js",
-    "migration:generate": "typeorm migration:generate -d dist/data-source.js"
+    "typeorm": "typeorm-ts-node-commonjs -d src/data-source.ts",
+    "migration:run": "npm run typeorm -- migration:run",
+    "migration:generate": "npm run typeorm -- migration:generate src/migrations/Migration",
+    "migration:revert": "npm run typeorm -- migration:revert"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
