@@ -6,6 +6,9 @@
 
 #![no_std]
 
+#[cfg(test)]
+mod admin_tests;
+
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
 /// Minimum remaining TTL (in ledgers) before a persistent batch entry is
@@ -82,6 +85,14 @@ impl ReconciliationContract {
     pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::BatchCount, &0u32);
+    }
+
+    /// Returns the current administrator address.
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set")
     }
 
     /// Transfers reconciliation authority to `new_admin`.
@@ -194,26 +205,32 @@ impl ReconciliationContract {
         // Ensure we never delete batches at or after the latest batch. The latest
         // batch ID is batch_count - 1, so we clamp before_batch_id to latest_batch_id
         // to avoid deleting it or newer batches.
-        let latest_batch_id = Self::latest_batch_id(&env).unwrap_or(0);
+        let latest_batch_id = Self::batch_count(env.clone()).saturating_sub(1);
         let safe_upper = before_batch_id.min(latest_batch_id);
         let mut archived = 0;
         for batch_id in 0..safe_upper {
-            if archived >= max_batches { break; }
+            if archived >= max_batches {
+                break;
+            }
             let key = DataKey::Batch(batch_id);
             if env.storage().persistent().has(&key) {
                 env.storage().persistent().remove(&key);
                 archived += 1;
             }
-            id += 1;
         }
 
         env.events().publish(
             ("RECONCILIATION", "batches_archived"),
             BatchesArchivedEvent {
-                batches_pruned: pruned,
-                upper_batch_id,
+                batches_pruned: archived,
+                upper_batch_id: safe_upper,
             },
         );
+        archived
+    }
+
+    fn require_admin(env: &Env, caller: &Address) {
+        assert!(caller == &Self::get_admin(env.clone()), "Not admin");
     }
 
     /// Loads a batch from persistent storage, extending its TTL so historical
@@ -246,13 +263,15 @@ impl ReconciliationContract {
         &computed == root
     }
 
-    pub fn hash_leaf(env: &Env, payment_id: &BytesN<32>) -> BytesN<32> {
+    fn hash_leaf(env: &Env, payment_id: &BytesN<32>) -> BytesN<32> {
         let mut buf = [0u8; 32];
         payment_id.copy_into_slice(&mut buf);
         env.crypto().sha256(&soroban_sdk::Bytes::from_array(env, &buf)).to_bytes()
     }
 
-    pub fn hash_pair(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
-        let mut buf = [0u8; 64];
-        left.copy_into_slice(&mut buf[..32]);
-        right.copy_into_slice(&
+    fn hash_pair(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
+        let mut bytes: soroban_sdk::Bytes = left.clone().into();
+        bytes.append(&right.clone().into());
+        env.crypto().sha256(&bytes).to_bytes()
+    }
+}

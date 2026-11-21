@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(test)]
+mod admin_tests;
+
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
 
 #[contracttype]
@@ -97,6 +100,14 @@ impl FeeDistributorContract {
         );
     }
 
+    /// Returns the current administrator address.
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set")
+    }
+
     pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
         caller.require_auth();
         let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
@@ -104,8 +115,8 @@ impl FeeDistributorContract {
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
             (
-                soroban_sdk::symbol_short!("FEE_DISTRIBUTOR"),
-                soroban_sdk::symbol_short!("admin_transferred"),
+                soroban_sdk::Symbol::new(&env, "FEE_DISTRIBUTOR"),
+                soroban_sdk::Symbol::new(&env, "admin_transferred"),
             ),
             AdminTransferredEvent { old_admin, new_admin },
         );

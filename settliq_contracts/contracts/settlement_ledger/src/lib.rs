@@ -94,6 +94,14 @@ impl SettlementLedgerContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
+    /// Returns the current administrator address.
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set")
+    }
+
     /// Transfers authority to write future immutable settlement records.
     /// The current administrator must authorize the rotation.
     pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
@@ -231,6 +239,148 @@ impl SettlementLedgerContract {
     pub fn get_settlement(env: Env, payment_id: BytesN<32>) -> SettlementRecord {
         let key = DataKey::Settlement(payment_id);
         let record: SettlementRecord = env
-            .s
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("settlement not found");
+        Self::bump_ttl(&env, &key);
+        record
+    }
 
-/* … truncated 2527 chars — edit only what you need near the top … */
+    /// Number of settlements recorded for a merchant. Returns 0 when the
+    /// merchant has no settlements yet.
+    pub fn get_merchant_settlement_count(env: Env, merchant: Address) -> u32 {
+        let key = DataKey::MerchantCount(merchant);
+        let count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+        if count > 0 {
+            Self::bump_ttl(&env, &key);
+        }
+        count
+    }
+
+    /// One bounded page of settlement IDs for a merchant. Returns an empty
+    /// vector when the page has no entries.
+    pub fn get_merchant_settlement_page(
+        env: Env,
+        merchant: Address,
+        page: u32,
+    ) -> Vec<BytesN<32>> {
+        let key = DataKey::MerchantPage(merchant, page);
+        let ids: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| vec![&env]);
+        if !ids.is_empty() {
+            Self::bump_ttl(&env, &key);
+        }
+        ids
+    }
+
+    /// Total number of settlements recorded platform-wide. Returns 0 when no
+    /// settlements have been recorded.
+    pub fn get_total_settlement_count(env: Env) -> u32 {
+        let key = DataKey::TotalCount;
+        let count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+        if count > 0 {
+            Self::bump_ttl(&env, &key);
+        }
+        count
+    }
+
+    /// One bounded page of platform-wide settlement IDs. Returns an empty
+    /// vector when the page has no entries.
+    pub fn get_all_settlement_page(env: Env, page: u32) -> Vec<BytesN<32>> {
+        let key = DataKey::AllPage(page);
+        let ids: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| vec![&env]);
+        if !ids.is_empty() {
+            Self::bump_ttl(&env, &key);
+        }
+        ids
+    }
+
+    /// Returns `true` if the settlement identified by `payment_id` has been
+    /// voided, `false` otherwise. Callable by anyone.
+    pub fn is_voided(env: Env, payment_id: BytesN<32>) -> bool {
+        let key = DataKey::Void(payment_id);
+        let exists = env.storage().persistent().has(&key);
+        if exists {
+            Self::bump_ttl(&env, &key);
+        }
+        exists
+    }
+
+    /// Returns the void details (reason and timestamp) for a settlement, or
+    /// `None` if the settlement has not been voided. Callable by anyone.
+    pub fn get_void(env: Env, payment_id: BytesN<32>) -> Option<SettlementVoid> {
+        let key = DataKey::Void(payment_id);
+        let void: Option<SettlementVoid> = env.storage().persistent().get(&key);
+        if void.is_some() {
+            Self::bump_ttl(&env, &key);
+        }
+        void
+    }
+
+    /// Mark a settlement as voided without mutating the original record.
+    /// Admin-only. Panics if the settlement does not exist or is already voided.
+    pub fn void_settlement(
+        env: Env,
+        caller: Address,
+        payment_id: BytesN<32>,
+        reason: String,
+    ) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let settlement_key = DataKey::Settlement(payment_id.clone());
+        assert!(
+            env.storage().persistent().has(&settlement_key),
+            "settlement not found"
+        );
+
+        let void_key = DataKey::Void(payment_id.clone());
+        assert!(
+            !env.storage().persistent().has(&void_key),
+            "settlement already voided"
+        );
+
+        let voided_at = env.ledger().timestamp();
+        let void = SettlementVoid {
+            payment_id: payment_id.clone(),
+            reason: reason.clone(),
+            voided_at,
+        };
+        env.storage().persistent().set(&void_key, &void);
+        Self::bump_ttl(&env, &void_key);
+
+        env.events().publish(
+            ("SETTLEMENT_LEDGER", "settlement_voided"),
+            SettlementVoidedEvent {
+                payment_id,
+                reason,
+                voided_at,
+            },
+        );
+    }
+
+    // ── internal helpers ─────────────────────────────────────────────────────
+
+    fn require_admin(env: &Env, caller: &Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        assert!(caller == &admin, "caller is not admin");
+    }
+
+    fn bump_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+}
