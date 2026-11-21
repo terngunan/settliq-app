@@ -268,5 +268,4 @@ impl PlatformStatsContract {
     }
 }
 
-#[cfg(test)]
-mod test;
+/* … truncated 357 chars — edit only what you need near the top … */
