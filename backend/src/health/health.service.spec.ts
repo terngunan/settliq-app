@@ -154,6 +154,26 @@ describe('HealthService', () => {
 
       expect(result.status).toBe('down');
     });
+
+    it('defaults the AbortSignal timeout to 5000ms when STELLAR_HEALTH_TIMEOUT_MS is unset', async () => {
+      const timeoutSpy = jest.spyOn(AbortSignal, 'timeout');
+
+      await service.checkStellar();
+
+      expect(configMock.get).toHaveBeenCalledWith('STELLAR_HEALTH_TIMEOUT_MS', 5000);
+      expect(timeoutSpy).toHaveBeenCalledWith(5000);
+    });
+
+    it('uses the configured STELLAR_HEALTH_TIMEOUT_MS for the AbortSignal timeout', async () => {
+      configMock.get.mockImplementation((key: string, defaultValue?: unknown) =>
+        key === 'STELLAR_HEALTH_TIMEOUT_MS' ? 12000 : defaultValue,
+      );
+      const timeoutSpy = jest.spyOn(AbortSignal, 'timeout');
+
+      await service.checkStellar();
+
+      expect(timeoutSpy).toHaveBeenCalledWith(12000);
+    });
   });
 });
 

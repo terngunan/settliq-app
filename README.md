@@ -86,5 +86,5 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 <!-- handsoff-issue-106 -->
 - #106: merchant_registry: Unbounded page_size parameter in merchants query risks gas budget exhaustion
 
-<!-- handsoff-issue-281 -->
-- #281: [Infrastructure] deploy.yml: Workflow attempts to invoke non-existent initialize on liquidity_router before contract is deployed
+<!-- handsoff-issue-143 -->
+- #143: payment_escrow: Contract lacks transfer_admin entry point permanently locking admin authority
