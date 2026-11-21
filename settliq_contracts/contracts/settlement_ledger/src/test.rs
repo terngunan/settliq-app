@@ -1,6 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Events}, Address, BytesN, Env, IntoVal, String, Symbol};
+use soroban_sdk::{
+    testutils::{Address as _, Events, Ledger},
+    vec, xdr::ToXdr, Address, BytesN, Env, String,
+};
 
 use crate::{AdminTransferredEvent, SettlementLedgerContract, SettlementLedgerContractClient, SettlementVoidedEvent};
 
@@ -15,6 +18,7 @@ fn fiat_ref(env: &Env, s: &str) -> String {
 fn setup() -> (Env, Address, SettlementLedgerContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
+    env.ledger().set_timestamp(1_700_000_001);
     let admin = Address::generate(&env);
     let id = env.register(SettlementLedgerContract, (&admin,));
     let client = SettlementLedgerContractClient::new(&env, &id);
@@ -70,6 +74,24 @@ fn test_record_and_get() {
 // ── administration ──────────────────────────────────────────────────────────
 
 #[test]
+fn test_get_admin_returns_deployment_admin() {
+    let (env, admin, client) = setup();
+    env.set_auths(&[]);
+
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn test_get_admin_returns_rotated_admin() {
+    let (env, admin, client) = setup();
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &new_admin);
+    env.set_auths(&[]);
+
+    assert_eq!(client.get_admin(), new_admin);
+}
+
+#[test]
 fn test_admin_rotation_allows_new_admin_to_record() {
     let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
@@ -78,7 +100,7 @@ fn test_admin_rotation_allows_new_admin_to_record() {
     client.transfer_admin(&admin, &new_admin);
     record(&client, &new_admin, &env, 5, &merchant, 10_000, 200);
 
-    assert_eq!(client.settlement_count(&merchant), 1);
+    assert_eq!(client.get_merchant_settlement_count(&merchant), 1);
 }
 
 #[test]
@@ -93,11 +115,18 @@ fn test_transfer_admin_emits_event() {
         new_admin: new_admin.clone(),
     };
 
+    let expected_topics = vec![
+        &env,
+        String::from_str(&env, "SETTLEMENT_LEDGER"),
+        String::from_str(&env, "admin_transferred"),
+    ]
+    .to_xdr(&env);
+    let expected_data = expected.to_xdr(&env);
     let events = env.events().all();
     let found = events.iter().any(|(contract, topics, data)| {
         contract == client.address
-            && topics == (Symbol::new(&env, "SETTLEMENT_LEDGER"), Symbol::new(&env, "admin_transferred")).into_val(&env)
-            && data == expected.into_val(&env)
+            && topics.to_xdr(&env) == expected_topics
+            && data.to_xdr(&env) == expected_data
     });
     assert!(found, "AdminTransferredEvent not emitted");
 }
@@ -124,7 +153,7 @@ fn test_duplicate_record_panics() {
 }
 
 #[test]
-#[should_panic(expected = "not admin")]
+#[should_panic(expected = "caller is not admin")]
 fn test_record_settlement_unauthorized_caller_panics() {
     let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
@@ -139,7 +168,7 @@ fn test_void_preserves_original_settlement() {
     record(&client, &admin, &env, 7, &merchant, 1_000, 20);
     client.void_settlement(&admin, &pid(&env, 7), &fiat_ref(&env, "operator correction"));
     assert_eq!(client.get_settlement(&pid(&env, 7)).amount, 1_000);
-    assert_eq!(client.get_settlement_void(&pid(&env, 7)).unwrap().reason, fiat_ref(&env, "operator correction"));
+    assert_eq!(client.get_void(&pid(&env, 7)).unwrap().reason, fiat_ref(&env, "operator correction"));
 }
 
 #[test]
@@ -158,11 +187,18 @@ fn test_void_settlement_emits_event() {
         voided_at,
     };
 
+    let expected_topics = vec![
+        &env,
+        String::from_str(&env, "SETTLEMENT_LEDGER"),
+        String::from_str(&env, "settlement_voided"),
+    ]
+    .to_xdr(&env);
+    let expected_data = expected.to_xdr(&env);
     let events = env.events().all();
     let found = events.iter().any(|(contract, topics, data)| {
         contract == client.address
-            && topics == (Symbol::new(&env, "SETTLEMENT_LEDGER"), Symbol::new(&env, "settlement_voided")).into_val(&env)
-            && data == expected.into_val(&env)
+            && topics.to_xdr(&env) == expected_topics
+            && data.to_xdr(&env) == expected_data
     });
     assert!(found, "SettlementVoidedEvent not emitted");
 }
@@ -222,15 +258,15 @@ fn test_list_settlements_pagination() {
         record(&client, &admin, &env, seed, &merchant, 1_000, 20);
     }
 
-    assert_eq!(client.settlement_count(&merchant), 25);
+    assert_eq!(client.get_merchant_settlement_count(&merchant), 25);
 
-    let page0 = client.list_settlements(&merchant, &0);
+    let page0 = client.get_merchant_settlement_page(&merchant, &0);
     assert_eq!(page0.len(), 20); // full page
 
-    let page1 = client.list_settlements(&merchant, &1);
+    let page1 = client.get_merchant_settlement_page(&merchant, &1);
     assert_eq!(page1.len(), 5); // remainder
 
-    let page2 = client.list_settlements(&merchant, &2);
+    let page2 = client.get_merchant_settlement_page(&merchant, &2);
     assert_eq!(page2.len(), 0); // beyond end
 }
 
@@ -246,8 +282,8 @@ fn test_merchant_isolation() {
     record(&client, &admin, &env, 51, &m1, 2_000, 40);
     record(&client, &admin, &env, 52, &m2, 3_000, 60);
 
-    assert_eq!(client.settlement_count(&m1), 2);
-    assert_eq!(client.settlement_count(&m2), 1);
+    assert_eq!(client.get_merchant_settlement_count(&m1), 2);
+    assert_eq!(client.get_merchant_settlement_count(&m2), 1);
 }
 
 #[test]
@@ -257,8 +293,8 @@ fn test_platform_wide_index_lists_every_merchant() {
     let second = Address::generate(&env);
     record(&client, &admin, &env, 60, &first, 1_000, 20);
     record(&client, &admin, &env, 61, &second, 2_000, 40);
-    assert_eq!(client.total_settlement_count(), 2);
-    assert_eq!(client.list_all_settlements(&0).len(), 2);
+    assert_eq!(client.get_total_settlement_count(), 2);
+    assert_eq!(client.get_all_settlement_page(&0).len(), 2);
 }
 
 // ── get on unknown payment_id panics ─────────────────────────────────────────
@@ -274,7 +310,7 @@ fn test_get_unknown_panics() {
 
 /// Records enough settlements to span multiple AllPage keys and asserts that
 /// no single storage entry grows unbounded with total settlement count, that
-/// total_settlement_count is O(1), and that list_all_settlements reads only
+/// get_total_settlement_count is O(1), and that get_all_settlement_page reads only
 /// the requested page.
 #[test]
 fn test_platform_wide_index_uses_bounded_pages() {
@@ -289,11 +325,11 @@ fn test_platform_wide_index_uses_bounded_pages() {
     }
 
     // Scalar count must be exact.
-    assert_eq!(client.total_settlement_count(), 45);
+    assert_eq!(client.get_total_settlement_count(), 45);
 
     // Each page must be bounded by PAGE_SIZE.
-    assert_eq!(client.list_all_settlements(&0).len(), 20);
-    assert_eq!(client.list_all_settlements(&1).len(), 20);
-    assert_eq!(client.list_all_settlements(&2).len(), 5);
-    assert_eq!(client.list_all_settlements(&3).len(), 0);
+    assert_eq!(client.get_all_settlement_page(&0).len(), 20);
+    assert_eq!(client.get_all_settlement_page(&1).len(), 20);
+    assert_eq!(client.get_all_settlement_page(&2).len(), 5);
+    assert_eq!(client.get_all_settlement_page(&3).len(), 0);
 }
