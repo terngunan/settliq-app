@@ -10,6 +10,7 @@
       "id": 1,
       "title": "p95 Latency by Endpoint",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
       "targets": [
         {
@@ -52,6 +53,7 @@
       "id": 2,
       "title": "p50 / p95 / p99 Overall",
       "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 10, "w": 24, "h": 4 },
       "targets": [
         {

@@ -200,6 +200,17 @@ impl SlippageProtectionContract {
         env.storage().instance().get(&DataKey::Admin).unwrap()
     }
 
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        assert!(new_admin != caller, "new admin must be distinct");
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            ("SLIPPAGE", "admin_transferred"),
+            (caller, new_admin),
+        );
+    }
+
     fn require_admin(env: &Env, caller: &soroban_sdk::Address) {
         let admin: soroban_sdk::Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != &admin {

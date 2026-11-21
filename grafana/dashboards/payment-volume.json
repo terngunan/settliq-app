@@ -10,6 +10,7 @@
       "id": 1,
       "title": "Payment Volume Over Time",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
       "targets": [
         {
@@ -20,27 +21,13 @@
       ],
       "fieldConfig": {
         "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } }
-      },
-      "alert": {
-        "name": "Low Payment Volume",
-        "conditions": [
-          {
-            "evaluator": { "type": "lt", "params": [1] },
-            "query": { "params": ["A", "5m", "now"] },
-            "reducer": { "type": "avg" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "frequency": "1m",
-        "handler": 1,
-        "message": "Payment volume has dropped below threshold"
       }
     },
     {
       "id": 2,
       "title": "Total Payments (24h)",
       "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {
@@ -54,6 +41,7 @@
       "id": 3,
       "title": "Payment Volume USD (24h)",
       "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 6, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {
