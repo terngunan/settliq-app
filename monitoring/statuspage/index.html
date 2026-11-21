@@ -271,7 +271,9 @@
     // In production this is served by the Cloudflare Worker which proxies
     // /health/admin and injects the response. For direct hosting, set this to
     // your API base URL (must have CORS enabled for status.settliq.xyz).
-    const API_BASE = window.__API_BASE__ || 'https://api.settliq.xyz';
+    // Default to a relative path so local/staging instances query their own
+    // environment (via the worker proxy) instead of production.
+    const API_BASE = window.__API_BASE__ || '/api/status';
     const POLL_INTERVAL_MS = 60_000;
 
     // ─── Component display config ──────────────────────────────────────────────

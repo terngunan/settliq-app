@@ -107,6 +107,18 @@ async function serveStatusPage(env) {
     "`${API_BASE}/api/status`",
   );
 
+  const apiOrigin = env.API_ORIGIN ?? 'https://api.settliq.xyz';
+  const csp = [
+    "default-src 'self'",
+    `script-src 'self' ${apiOrigin}`,
+    `connect-src 'self' ${apiOrigin}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+
   return new Response(injected, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
@@ -114,6 +126,7 @@ async function serveStatusPage(env) {
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Content-Security-Policy': csp,
     },
   });
 }
