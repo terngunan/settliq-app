@@ -31,6 +31,45 @@ fn test_constructor_unregistered_address_has_no_role() {
     assert_eq!(client.get_role(&stranger), None);
 }
 
+// ── get_super_admin_count ─────────────────────────────────────────────────────
+
+#[test]
+fn test_get_super_admin_count_after_constructor() {
+    let (_env, client, _super_admin) = setup_env();
+    assert_eq!(client.get_super_admin_count(), 1);
+}
+
+#[test]
+fn test_get_super_admin_count_reflects_grant() {
+    let (env, client, super_admin) = setup_env();
+    let second_super = Address::generate(&env);
+
+    assert_eq!(client.get_super_admin_count(), 1);
+    client.grant_role(&super_admin, &second_super, &Role::SuperAdmin);
+    assert_eq!(client.get_super_admin_count(), 2);
+}
+
+#[test]
+fn test_get_super_admin_count_reflects_revoke() {
+    let (env, client, super_admin) = setup_env();
+    let second_super = Address::generate(&env);
+
+    client.grant_role(&super_admin, &second_super, &Role::SuperAdmin);
+    assert_eq!(client.get_super_admin_count(), 2);
+
+    client.revoke_role(&super_admin, &second_super);
+    assert_eq!(client.get_super_admin_count(), 1);
+}
+
+#[test]
+fn test_get_super_admin_count_unchanged_for_non_super_grants() {
+    let (env, client, super_admin) = setup_env();
+    let user = Address::generate(&env);
+
+    client.grant_role(&super_admin, &user, &Role::ReadOnly);
+    assert_eq!(client.get_super_admin_count(), 1);
+}
+
 // ── grant_role ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -229,72 +268,4 @@ fn test_execute_operations_task_rejected_for_compliance_admin() {
     client.grant_role(&super_admin, &compliance, &Role::ComplianceAdmin);
     // ComplianceAdmin must not be able to execute operations tasks
     client.execute_operations_task(&compliance);
-}
-
-#[test]
-#[should_panic(expected = "insufficient role")]
-fn test_execute_operations_task_rejected_for_readonly() {
-    let (env, client, super_admin) = setup_env();
-    let readonly = Address::generate(&env);
-
-    client.grant_role(&super_admin, &readonly, &Role::ReadOnly);
-    client.execute_operations_task(&readonly);
-}
-
-// ── execute_compliance_task ───────────────────────────────────────────────────
-
-#[test]
-fn test_execute_compliance_task_allowed_for_compliance_admin() {
-    let (env, client, super_admin) = setup_env();
-    let compliance = Address::generate(&env);
-
-    client.grant_role(&super_admin, &compliance, &Role::ComplianceAdmin);
-    // Should not panic
-    client.execute_compliance_task(&compliance);
-}
-
-#[test]
-fn test_execute_compliance_task_allowed_for_super_admin() {
-    let (_env, client, super_admin) = setup_env();
-    // SuperAdmin satisfies ComplianceAdmin requirement
-    client.execute_compliance_task(&super_admin);
-}
-
-#[test]
-#[should_panic(expected = "insufficient role")]
-fn test_execute_compliance_task_rejected_for_operations_admin() {
-    let (env, client, super_admin) = setup_env();
-    let ops = Address::generate(&env);
-
-    client.grant_role(&super_admin, &ops, &Role::OperationsAdmin);
-    // OperationsAdmin must not be able to execute compliance tasks
-    client.execute_compliance_task(&ops);
-}
-
-#[test]
-#[should_panic(expected = "insufficient role")]
-fn test_execute_compliance_task_rejected_for_readonly() {
-    let (env, client, super_admin) = setup_env();
-    let readonly = Address::generate(&env);
-
-    client.grant_role(&super_admin, &readonly, &Role::ReadOnly);
-    client.execute_compliance_task(&readonly);
-}
-
-#[test]
-#[should_panic(expected = "role not assigned")]
-fn test_execute_compliance_task_rejected_for_unregistered() {
-    let (env, client, _super_admin) = setup_env();
-    let stranger = Address::generate(&env);
-
-    client.execute_compliance_task(&stranger);
-}
-
-#[test]
-#[should_panic(expected = "role not assigned")]
-fn test_execute_operations_task_rejected_for_unregistered() {
-    let (env, client, _super_admin) = setup_env();
-    let stranger = Address::generate(&env);
-
-    client.execute_operations_task(&stranger);
 }

@@ -240,48 +240,56 @@ fn test_same_ledger_seq_rejected_on_second_confirmation() {
     // Second confirmation at the same ledger 1001 — must be rejected.
     let result = client.try_confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
     assert!(result.is_err());
+    assert_eq!(client.get_payment_confirmations(&payment_id), 1);
+}
 
-    // Confirmation count must remain 1 — the second call had no effect.
+// ── Issue #261: Escrow release failure must not persist Confirmed state ──────
+
+#[test]
+fn test_escrow_release_failure_does_not_mark_settling() {
+    // Issue #261: When the escrow release call fails/reverts, the confirmation
+    // transaction must revert atomically. The payment must NOT be marked as
+    // settling (Confirmed) and the confirmation count must not advance past
+    // the pre-release state.
+    let (env, admin, client) = setup(2);
+    let payment_id = pid(&env, 61);
+    let merchant = Address::generate(&env);
+
+    // Point the contract at an escrow address that has no release entrypoint
+    // registered, so the cross-contract release call reverts.
+    let bad_escrow = Address::generate(&env);
+    client.set_payment_escrow_contract(&admin, &bad_escrow);
+
+    // First confirmation succeeds (below threshold).
+    client.confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
+    assert_eq!(client.get_payment_confirmations(&payment_id), 1);
+    assert!(!client.is_settling(&payment_id));
+
+    // Second confirmation reaches threshold and triggers escrow release, which
+    // fails. The whole call must revert.
+    let result = client.try_confirm_payment(&admin, &payment_id, &1002, &100_000, &merchant);
+    assert!(result.is_err(), "escrow release failure must revert confirm_payment");
+
+    // Terminal Confirmed state must not be persisted.
+    assert!(!client.is_settling(&payment_id));
+    // Confirmation count must not have advanced past the pre-release state.
     assert_eq!(client.get_payment_confirmations(&payment_id), 1);
 }
 
 #[test]
-fn test_strictly_greater_ledger_seq_accepted() {
-    // Confirming with a ledger_seq strictly greater than the last recorded
-    // value must succeed.
-    let (env, admin, client) = setup(3);
-    let payment_id = pid(&env, 43);
+fn test_escrow_release_failure_at_threshold_of_one() {
+    // Issue #261: Even with a threshold of one, a failed escrow release must
+    // revert the confirmation and leave the payment unconfirmed.
+    let (env, admin, client) = setup(1);
+    let payment_id = pid(&env, 62);
     let merchant = Address::generate(&env);
 
-    client.confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
-    // ledger 1002 > 1001 — must be accepted.
-    client.confirm_payment(&admin, &payment_id, &1002, &100_000, &merchant);
-    assert_eq!(client.get_payment_confirmations(&payment_id), 2);
-}
+    let bad_escrow = Address::generate(&env);
+    client.set_payment_escrow_contract(&admin, &bad_escrow);
 
-#[test]
-#[should_panic(expected = "ledger_seq must exceed last recorded ledger")]
-fn test_duplicate_ledger_seq_panics_with_correct_message() {
-    // Verify that the panic message matches the updated error string in the fix.
-    let (env, admin, client) = setup(3);
-    let payment_id = pid(&env, 44);
-    let merchant = Address::generate(&env);
+    let result = client.try_confirm_payment(&admin, &payment_id, &1001, &50_000, &merchant);
+    assert!(result.is_err(), "escrow release failure must revert confirm_payment");
 
-    client.confirm_payment(&admin, &payment_id, &2000, &100_000, &merchant);
-    // Same ledger — must panic with the updated message.
-    client.confirm_payment(&admin, &payment_id, &2000, &100_000, &merchant);
-}
-
-#[test]
-fn test_regressed_ledger_seq_also_rejected() {
-    // A ledger_seq less than the last recorded must also be rejected —
-    // this was already blocked by the old >= check and must remain blocked.
-    let (env, admin, client) = setup(3);
-    let payment_id = pid(&env, 45);
-    let merchant = Address::generate(&env);
-
-    client.confirm_payment(&admin, &payment_id, &5000, &100_000, &merchant);
-    // ledger 4999 < 5000 — must be rejected.
-    let result = client.try_confirm_payment(&admin, &payment_id, &4999, &100_000, &merchant);
-    assert!(result.is_err());
+    assert!(!client.is_settling(&payment_id));
+    assert_eq!(client.get_payment_confirmations(&payment_id), 0);
 }

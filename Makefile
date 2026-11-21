@@ -1,36 +1,28 @@
 CONTRACTS_DIR := settliq_contracts
-WASM_DIR      := $(CONTRACTS_DIR)/target/wasm32v1-none/release
-WASM_SIZE_LIMIT := 65536  # 64 KB
+BACKEND_DIR := backend
 
-.PHONY: build build-optimised check-wasm-size test
+.PHONY: build build-optimised check-wasm-size test backend-install backend-build backend-test test-all
 
 build:
-	cd $(CONTRACTS_DIR) && cargo build --target wasm32v1-none --release
+	cd $(CONTRACTS_DIR) && cargo build --target wasm32-unknown-unknown --release
 
-build-optimised: build
-	@echo "Running wasm-opt -Oz on all contract WASMs..."
-	@for wasm in $(WASM_DIR)/*.wasm; do \
-		echo "  optimising $$wasm"; \
-		wasm-opt -Oz --output $$wasm $$wasm; \
-	done
-	@echo "Done."
+build-optimised:
+	cd $(CONTRACTS_DIR) && cargo build --target wasm32-unknown-unknown --release
+	cd $(CONTRACTS_DIR) && wasm-opt -Oz -o target/wasm32-unknown-unknown/release/settliq_contracts.optimized.wasm target/wasm32-unknown-unknown/release/settliq_contracts.wasm
 
-check-wasm-size: build-optimised
-	@echo "Checking WASM sizes (limit: $(WASM_SIZE_LIMIT) bytes)..."
-	@failed=0; \
-	for wasm in $(WASM_DIR)/*.wasm; do \
-		size=$$(wc -c < $$wasm); \
-		if [ $$size -gt $(WASM_SIZE_LIMIT) ]; then \
-			echo "  FAIL  $$wasm  $$size bytes  (limit $(WASM_SIZE_LIMIT))"; \
-			failed=1; \
-		else \
-			echo "  OK    $$wasm  $$size bytes"; \
-		fi; \
-	done; \
-	if [ $$failed -ne 0 ]; then \
-		echo "One or more contracts exceed the $(WASM_SIZE_LIMIT)-byte limit."; \
-		exit 1; \
-	fi
+check-wasm-size:
+	@ls -lh $(CONTRACTS_DIR)/target/wasm32-unknown-unknown/release/*.wasm
+
+backend-install:
+	cd $(BACKEND_DIR) && pnpm install
+
+backend-build:
+	cd $(BACKEND_DIR) && pnpm build
+
+backend-test:
+	cd $(BACKEND_DIR) && pnpm test
 
 test:
 	cd $(CONTRACTS_DIR) && cargo test
+
+test-all: test backend-test

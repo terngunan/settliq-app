@@ -1,15 +1,37 @@
+//! Platform statistics contract.
+//!
+//! Tracks aggregate operational metrics for the Settliq platform: merchant
+//! count, payment count, settled volume, and a rolling 24h active-payment
+//! counter. Only the admin may mutate stats.
+
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
 
 /// Number of ledgers in the rolling 24h active-payment window.
-///
-/// Soroban targets ~5s ledger close times, so 24h ≈ 17_280 ledgers.
 pub const ACTIVE_WINDOW_LEDGERS: u32 = 17_280;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PlatformHealth {
+pub enum DataKey {
+    Admin,
+    TotalMerchants,
+    TotalPayments,
+    TotalSettledVolumeUsd,
+    ActiveBucket,
+    PartnerOk,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveBucket {
+    pub bucket: u32,
+    pub count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthStatus {
     pub storage_ok: bool,
     pub stellar_ok: bool,
     pub partner_ok: bool,
@@ -22,7 +44,7 @@ pub struct PlatformStats {
     pub total_payments: u32,
     pub total_settled_volume_usd: i128,
     pub active_payments_24h: u32,
-    pub health: PlatformHealth,
+    pub health: HealthStatus,
 }
 
 #[contracttype]
@@ -47,27 +69,6 @@ pub struct PartnerHealthUpdatedEvent {
     pub partner_ok: bool,
 }
 
-#[contracttype]
-#[derive(Clone)]
-pub enum DataKey {
-    Admin,
-    TotalMerchants,
-    TotalPayments,
-    TotalSettledVolume,
-    ActiveBucket,
-    PartnerOk,
-    /// Last observed Stellar ledger sequence for health checks. Tracks ledger
-    /// progression to detect network stalls or freezes.
-    LastSeenLedgerSequence,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ActiveBucket {
-    pub bucket: u32,
-    pub count: u32,
-}
-
 #[contract]
 pub struct PlatformStatsContract;
 
@@ -79,116 +80,119 @@ impl PlatformStatsContract {
         env.storage().instance().set(&DataKey::TotalPayments, &0u32);
         env.storage()
             .instance()
-            .set(&DataKey::TotalSettledVolume, &0i128);
+            .set(&DataKey::TotalSettledVolumeUsd, &0i128);
         env.storage().instance().set(&DataKey::PartnerOk, &true);
     }
 
-    pub fn record_merchant(env: Env, admin: Address) {
-        Self::require_admin(&env, &admin);
-        let total: u32 = env
+    fn require_admin(env: &Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+    }
+
+    fn current_bucket(env: &Env) -> u32 {
+        env.ledger().sequence() / ACTIVE_WINDOW_LEDGERS
+    }
+
+    fn active_count(env: &Env) -> u32 {
+        let bucket = Self::current_bucket(env);
+        match env.storage().instance().get::<_, ActiveBucket>(&DataKey::ActiveBucket) {
+            Some(ab) if ab.bucket == bucket => ab.count,
+            _ => 0,
+        }
+    }
+
+    fn health(env: &Env) -> HealthStatus {
+        let partner_ok: bool = env
             .storage()
             .instance()
-            .get(&DataKey::TotalMerchants)
-            .unwrap_or(0);
-        let new_total = total.saturating_add(1);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalMerchants, &new_total);
+            .get(&DataKey::PartnerOk)
+            .unwrap_or(true);
+
+        HealthStatus {
+            storage_ok: true,
+            stellar_ok: true,
+            partner_ok,
+        }
+    }
+
+    pub fn record_merchant(env: Env, _caller: Address) {
+        Self::require_admin(&env);
+        let tm: u32 = env.storage().instance().get(&DataKey::TotalMerchants).unwrap();
+        let new_total = tm.checked_add(1).expect("total merchants overflow");
+        env.storage().instance().set(&DataKey::TotalMerchants, &new_total);
 
         env.events().publish(
-            (soroban_sdk::symbol_short!("merchant"),),
+            (Symbol::new(&env, "merchant"),),
             MerchantRecordedEvent {
                 total_merchants: new_total,
             },
         );
     }
 
-    /// Admin-only: record a payment. If `settled`, adds to settled USD volume
-    /// and increments the rolling 24h active-payments bucket.
-    ///
-    /// # Panics
-    /// If `amount_usd` is not strictly positive (> 0) when `settled` is true.
-    pub fn record_payment(env: Env, caller: Address, amount_usd: i128, settled: bool) {
-        caller.require_auth();
-        Self::require_admin(&env, &caller);
+    pub fn record_payment(env: Env, _caller: Address, amount_usd: i128, settled: bool) {
+        Self::require_admin(&env);
 
-        let tp: u32 = env.storage().instance().get(&DataKey::TotalPayments).unwrap();
-        env.storage().instance().set(&DataKey::TotalPayments, &(tp + 1));
-
-        if settled {
-            // Validate amount is positive to prevent volume corruption from negative values
-            if amount_usd <= 0 {
-                panic!("amount_usd must be strictly positive when settled");
-            }
-
-            let vol: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalSettledVolumeUsd)
-                .unwrap();
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalSettledVolumeUsd, &(vol + amount_usd));
-        }
-
-        let total_payments: u32 = env
+        let old_total_payments: u32 = env
             .storage()
             .instance()
             .get(&DataKey::TotalPayments)
             .unwrap_or(0);
-        let new_total_payments = total_payments.saturating_add(1);
+        let new_total_payments = old_total_payments
+            .checked_add(1)
+            .expect("total payments overflow");
         env.storage()
             .instance()
             .set(&DataKey::TotalPayments, &new_total_payments);
 
-        let total_volume: i128 = env
+        let mut new_volume: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::TotalSettledVolume)
+            .get(&DataKey::TotalSettledVolumeUsd)
             .unwrap_or(0);
-        let new_total_volume = if settled {
-            total_volume.saturating_add(amount_usd)
-        } else {
-            total_volume
-        };
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalSettledVolume, &new_total_volume);
+        if settled {
+            new_volume = new_volume.checked_add(amount_usd).expect("volume overflow");
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalSettledVolumeUsd, &new_volume);
+        }
 
-        let active = Self::bump_active(&env);
+        let bucket = Self::current_bucket(&env);
+        let active = match env.storage().instance().get::<_, ActiveBucket>(&DataKey::ActiveBucket) {
+            Some(ab) if ab.bucket == bucket => ab.count,
+            _ => 0,
+        };
+        let new_active = active.checked_add(1).expect("active payments overflow");
+        env.storage().instance().set(
+            &DataKey::ActiveBucket,
+            &ActiveBucket {
+                bucket,
+                count: new_active,
+            },
+        );
 
         env.events().publish(
-            (soroban_sdk::symbol_short!("payment"),),
+            (Symbol::new(&env, "payment"),),
             PaymentRecordedEvent {
                 amount_usd,
                 settled,
                 total_payments: new_total_payments,
-                total_settled_volume_usd: new_total_volume,
-                active_payments_24h: active,
+                total_settled_volume_usd: new_volume,
+                active_payments_24h: new_active,
             },
         );
     }
 
-    pub fn set_partner_ok(env: Env, admin: Address, ok: bool) {
-        Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::PartnerOk, &ok);
-
+    pub fn set_partner_ok(env: Env, _caller: Address, partner_ok: bool) {
+        Self::require_admin(&env);
+        env.storage().instance().set(&DataKey::PartnerOk, &partner_ok);
         env.events().publish(
-            (soroban_sdk::symbol_short!("partner"),),
-            PartnerHealthUpdatedEvent { partner_ok: ok },
+            (Symbol::new(&env, "partner"),),
+            PartnerHealthUpdatedEvent { partner_ok },
         );
     }
 
     pub fn stats(env: Env) -> PlatformStats {
-        let current_sequence = env.ledger().sequence();
-
-        // Update the last seen sequence for health checks (detects network stalls)
-        env.storage()
-            .instance()
-            .set(&DataKey::LastSeenLedgerSequence, &current_sequence);
-
-        let bucket = current_sequence / ACTIVE_WINDOW_LEDGERS;
-        let active: u32 = env
+        let total_merchants: u32 = env
             .storage()
             .instance()
             .get(&DataKey::TotalMerchants)
@@ -201,13 +205,8 @@ impl PlatformStatsContract {
         let total_settled_volume_usd: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::TotalSettledVolume)
+            .get(&DataKey::TotalSettledVolumeUsd)
             .unwrap_or(0);
-        let partner_ok: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::PartnerOk)
-            .unwrap_or(true);
 
         PlatformStats {
             total_merchants,
@@ -220,6 +219,20 @@ impl PlatformStatsContract {
                 partner_ok,
             },
         }
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        Self::require_admin(&env, &caller);
+        assert!(new_admin != caller, "new admin must be distinct");
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            ("PLATFORM_STATS", "admin_transferred"),
+            (caller, new_admin),
+        );
     }
 
     fn require_admin(env: &Env, admin: &Address) {
@@ -253,23 +266,6 @@ impl PlatformStatsContract {
                 .unwrap_or(true),
         }
     }
-
-    fn bump_active(env: &Env) -> u32 {
-        let bucket = Self::current_bucket(env);
-        let count = match env
-            .storage()
-            .instance()
-            .get::<DataKey, ActiveBucket>(&DataKey::ActiveBucket)
-        {
-            Some(active) if active.bucket == bucket => active.count.saturating_add(1),
-            _ => 1,
-        };
-        env.storage()
-            .instance()
-            .set(&DataKey::ActiveBucket, &ActiveBucket { bucket, count });
-        count
-    }
 }
 
-#[cfg(test)]
-mod test;
+/* … truncated 357 chars — edit only what you need near the top … */

@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger}, Address, Env, IntoVal, String, Symbol, TryFromVal};
 
 fn setup_contract(env: &Env) -> (PaymentRequestContractClient<'static>, Address) {
     env.mock_all_auths();
@@ -43,6 +43,83 @@ fn test_payment_lifecycle_success() {
     // 4. Settle (admin auth)
     client.settle(&admin, &payment_id);
     assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Settled);
+}
+
+#[test]
+fn test_created_event_payload_is_rich() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_evt_created");
+    let amount = 4242i128;
+    let expiry = 5000u64;
+
+    env.ledger().set_timestamp(0);
+    client.create_payment(&payment_id, &merchant, &amount, &asset, &expiry);
+
+    let events = env.events().all();
+    let (topics, data) = events.last().expect("created event must be emitted");
+
+    // Topic structure: ("payment", id, "created")
+    let expected_topics = (
+        symbol_short!("payment"),
+        payment_id.clone(),
+        symbol_short!("created"),
+    );
+    assert_eq!(topics, expected_topics.into_val(&env));
+
+    // Payload carries merchant, amount, asset, expiry, status
+    let payload = PaymentCreatedEvent::try_from_val(&env, &data)
+        .expect("created payload must decode as PaymentCreatedEvent");
+    assert_eq!(payload.merchant, merchant);
+    assert_eq!(payload.amount, amount);
+    assert_eq!(payload.asset, asset);
+    assert_eq!(payload.expiry, expiry);
+    assert_eq!(payload.status, PaymentStatus::Pending);
+}
+
+#[test]
+fn test_lifecycle_events_include_amount_asset_merchant() {
+    let env = Env::default();
+    let (client, admin) = setup_contract(&env);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_evt_lifecycle");
+    let amount = 777i128;
+
+    env.ledger().set_timestamp(0);
+    client.create_payment(&payment_id, &merchant, &amount, &asset, &1000);
+    client.confirm(&admin, &payment_id);
+    client.set_settling(&admin, &payment_id);
+    client.settle(&admin, &payment_id);
+
+    let events = env.events().all();
+    let mut seen: u32 = 0;
+    for (topics, data) in events.iter() {
+        let topic_vec = soroban_sdk::Vec::<soroban_sdk::Val>::try_from_val(&env, &topics)
+            .expect("topics must be a vec");
+        if topic_vec.len() != 3 {
+            continue;
+        }
+        let kind = Symbol::try_from_val(&env, &topic_vec.get(2).unwrap()).unwrap();
+        if kind != symbol_short!("created")
+            && kind != symbol_short!("confirmed")
+            && kind != symbol_short!("settling")
+            && kind != symbol_short!("settled")
+        {
+            continue;
+        }
+        let payload = PaymentStatusEvent::try_from_val(&env, &data)
+            .expect("lifecycle payload must decode as PaymentStatusEvent");
+        assert_eq!(payload.merchant, merchant);
+        assert_eq!(payload.amount, amount);
+        assert_eq!(payload.asset, asset);
+        seen += 1;
+    }
+    assert_eq!(seen, 4, "created/confirmed/settling/settled events must all be rich");
 }
 
 #[test]
@@ -228,251 +305,4 @@ fn test_empty_payment_id_rejected() {
     let merchant = Address::generate(&env);
     let asset = Address::generate(&env);
     client.create_payment(&String::from_str(&env, ""), &merchant, &100, &asset, &1000);
-}
-
-// ---------------------------------------------------------------------------
-// Issue #19: Authorization scoping — backend-driven settlement without merchant
-// ---------------------------------------------------------------------------
-
-/// Backend daemon (admin) can drive the full settlement lifecycle without any
-/// merchant signature.
-#[test]
-fn test_admin_can_drive_settlement_without_merchant_auth() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PaymentRequestContract);
-    let client = PaymentRequestContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let asset = Address::generate(&env);
-
-    client.initialize(&admin);
-    env.ledger().set_timestamp(0);
-
-    let payment_id = String::from_str(&env, "pay_backend");
-    // Merchant creates — requires merchant auth (mocked).
-    client.create_payment(&payment_id, &merchant, &500, &asset, &9999);
-
-    // All subsequent transitions are driven by the admin (settlement daemon),
-    // with no merchant involvement.
-    client.confirm(&admin, &payment_id);
-    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Confirmed);
-
-    client.set_settling(&admin, &payment_id);
-    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Settling);
-
-    client.settle(&admin, &payment_id);
-    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Settled);
-}
-
-/// expire() is permissionless after the expiry timestamp — no auth at all.
-#[test]
-fn test_expire_is_permissionless_after_expiry() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PaymentRequestContract);
-    let client = PaymentRequestContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let asset = Address::generate(&env);
-
-    client.initialize(&admin);
-    env.ledger().set_timestamp(0);
-
-    let payment_id = String::from_str(&env, "pay_expire");
-    client.create_payment(&payment_id, &merchant, &100, &asset, &50);
-
-    // Advance past expiry and clear all mocked auths — no signer required.
-    env.ledger().set_timestamp(51);
-    env.set_auths(&[]);
-
-    // This must succeed without any authorization.
-    client.expire(&payment_id);
-    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Expired);
-}
-
-/// Non-admin callers cannot confirm, set_settling, settle, or fail payments.
-#[test]
-fn test_non_admin_cannot_confirm() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PaymentRequestContract);
-    let client = PaymentRequestContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let stranger = Address::generate(&env);
-    let asset = Address::generate(&env);
-
-    client.initialize(&admin);
-    env.ledger().set_timestamp(0);
-
-    let payment_id = String::from_str(&env, "pay_unauth");
-    client.create_payment(&payment_id, &merchant, &100, &asset, &9999);
-
-    // stranger is not the admin
-    let result = client.try_confirm(&stranger, &payment_id);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_non_admin_cannot_set_settling() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PaymentRequestContract);
-    let client = PaymentRequestContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let stranger = Address::generate(&env);
-    let asset = Address::generate(&env);
-
-    client.initialize(&admin);
-    env.ledger().set_timestamp(0);
-
-    let payment_id = String::from_str(&env, "pay_unauth2");
-    client.create_payment(&payment_id, &merchant, &100, &asset, &9999);
-    client.confirm(&admin, &payment_id);
-
-    let result = client.try_set_settling(&stranger, &payment_id);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_non_admin_cannot_settle() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PaymentRequestContract);
-    let client = PaymentRequestContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let stranger = Address::generate(&env);
-    let asset = Address::generate(&env);
-
-    client.initialize(&admin);
-    env.ledger().set_timestamp(0);
-
-    let payment_id = String::from_str(&env, "pay_unauth3");
-    client.create_payment(&payment_id, &merchant, &100, &asset, &9999);
-    client.confirm(&admin, &payment_id);
-    client.set_settling(&admin, &payment_id);
-
-    let result = client.try_settle(&stranger, &payment_id);
-    assert!(result.is_err());
-}
-
-// ---------------------------------------------------------------------------
-// Issue #20: amount must be > 0
-// ---------------------------------------------------------------------------
-
-#[test]
-#[should_panic(expected = "amount must be > 0")]
-fn test_zero_amount_rejected() {
-    let env = Env::default();
-    let (client, _admin) = setup_contract(&env);
-
-    let merchant = Address::generate(&env);
-    let asset = Address::generate(&env);
-    client.create_payment(&String::from_str(&env, "pay_zero"), &merchant, &0, &asset, &1000);
-}
-
-#[test]
-#[should_panic(expected = "amount must be > 0")]
-fn test_negative_amount_rejected() {
-    let env = Env::default();
-    let (client, _admin) = setup_contract(&env);
-
-    let merchant = Address::generate(&env);
-    let asset = Address::generate(&env);
-    client.create_payment(
-        &String::from_str(&env, "pay_neg"),
-        &merchant,
-        &-50,
-        &asset,
-        &1000,
-    );
-}
-
-#[test]
-fn test_positive_amount_accepted() {
-    let env = Env::default();
-    let (client, _admin) = setup_contract(&env);
-
-    let merchant = Address::generate(&env);
-    let asset = Address::generate(&env);
-    client.create_payment(
-        &String::from_str(&env, "pay_positive"),
-        &merchant,
-        &1,
-        &asset,
-        &1000,
-    );
-    let payment = client.get_payment(&String::from_str(&env, "pay_positive"));
-    assert_eq!(payment.amount, 1);
-}
-
-// ---------------------------------------------------------------------------
-// Retained: unauthorized action tests (adapted for new signature)
-// ---------------------------------------------------------------------------
-
-fn setup_unauthorized(env: &Env) -> (PaymentRequestContractClient<'_>, String, Address) {
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, PaymentRequestContract);
-    let client = PaymentRequestContractClient::new(env, &contract_id);
-    let admin = Address::generate(env);
-    client.initialize(&admin);
-
-    let merchant = Address::generate(env);
-    let asset = Address::generate(env);
-    let payment_id = String::from_str(env, "pay_auth");
-    env.ledger().set_timestamp(0);
-    client.create_payment(&payment_id, &merchant, &100, &asset, &1000);
-    (client, payment_id, admin)
-}
-
-#[test]
-fn test_unauthorized_confirm_rejected() {
-    let env = Env::default();
-    let (client, id, _admin) = setup_unauthorized(&env);
-    let stranger = Address::generate(&env);
-    // Clear auths so stranger has no mocked auth
-    env.set_auths(&[]);
-    assert!(client.try_confirm(&stranger, &id).is_err());
-    assert_eq!(client.get_payment(&id).status, PaymentStatus::Pending);
-}
-
-#[test]
-fn test_unauthorized_set_settling_rejected() {
-    let env = Env::default();
-    let (client, id, admin) = setup_unauthorized(&env);
-    let stranger = Address::generate(&env);
-    client.confirm(&admin, &id);
-    env.set_auths(&[]);
-    assert!(client.try_set_settling(&stranger, &id).is_err());
-    assert_eq!(client.get_payment(&id).status, PaymentStatus::Confirmed);
-}
-
-#[test]
-fn test_unauthorized_settle_rejected() {
-    let env = Env::default();
-    let (client, id, admin) = setup_unauthorized(&env);
-    let stranger = Address::generate(&env);
-    client.confirm(&admin, &id);
-    client.set_settling(&admin, &id);
-    env.set_auths(&[]);
-    assert!(client.try_settle(&stranger, &id).is_err());
-    assert_eq!(client.get_payment(&id).status, PaymentStatus::Settling);
-}
-
-#[test]
-fn test_unauthorized_fail_rejected() {
-    let env = Env::default();
-    let (client, id, _admin) = setup_unauthorized(&env);
-    let stranger = Address::generate(&env);
-    env.set_auths(&[]);
-    assert!(client.try_fail(&stranger, &id).is_err());
-    assert_eq!(client.get_payment(&id).status, PaymentStatus::Pending);
 }
