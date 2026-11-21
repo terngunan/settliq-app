@@ -47,3 +47,45 @@ describe('Merchant entity — serialization (issue #30)', () => {
     expect(plain.role).toBe(MerchantRole.MERCHANT);
   });
 });
+
+describe('Merchant entity — feeRate numeric transformer (issue #142)', () => {
+  function getFeeRateTransformer() {
+    const metadata = (Merchant as any).__typeormMetadata__;
+    return metadata;
+  }
+
+  it('feeRate column defines a transformer that parses DB strings to numbers', () => {
+    // Access the column metadata via TypeORM's getMetadataArgsStorage.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { getMetadataArgsStorage } = require('typeorm');
+    const column = getMetadataArgsStorage()
+      .columns.filter((c: any) => c.target === Merchant)
+      .find((c: any) => c.propertyName === 'feeRate');
+
+    expect(column).toBeDefined();
+    expect(column.options.transformer).toBeDefined();
+
+    const transformer = column.options.transformer;
+    const parsed = transformer.from('0.0150');
+    expect(typeof parsed).toBe('number');
+    expect(parsed).toBe(0.015);
+
+    expect(transformer.to(0.015)).toBe(0.015);
+  });
+
+  it('reading feeRate from a DB string yields a number usable in arithmetic', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { getMetadataArgsStorage } = require('typeorm');
+    const column = getMetadataArgsStorage()
+      .columns.filter((c: any) => c.target === Merchant)
+      .find((c: any) => c.propertyName === 'feeRate');
+
+    const merchant = Object.assign(new Merchant(), {
+      feeRate: column.options.transformer.from('0.0150'),
+    });
+
+    expect(typeof merchant.feeRate).toBe('number');
+    expect(merchant.feeRate * 100).toBeCloseTo(1.5);
+    expect(merchant.feeRate + 0.005).toBeCloseTo(0.02);
+  });
+});

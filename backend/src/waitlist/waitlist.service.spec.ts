@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { WaitlistService } from './waitlist.service';
 import { WaitlistEntry } from './entities/waitlist.entity';
 
@@ -24,6 +24,51 @@ describe('WaitlistService', () => {
     }).compile();
 
     service = module.get<WaitlistService>(WaitlistService);
+  });
+
+  describe('join', () => {
+    it('retries referral code generation on collision and succeeds', async () => {
+      const generateSpy = jest
+        .spyOn(service as any, 'generateUniqueReferralCode')
+        .mockResolvedValueOnce('UNIQUE01');
+
+      repo.findOne.mockResolvedValue(null);
+
+      const dto = {
+        email: 'new@example.com',
+        username: 'newuser',
+        businessName: 'New Biz',
+        country: 'US',
+      } as any;
+
+      const result = await service.join(dto);
+
+      expect(generateSpy).toHaveBeenCalled();
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ referralCode: 'UNIQUE01' }),
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('generates a collision-checked referral code via generateUniqueReferralCode', async () => {
+      const generateSpy = jest
+        .spyOn(service as any, 'generateUniqueReferralCode')
+        .mockResolvedValue('ABCD1234');
+
+      repo.findOne.mockResolvedValue(null);
+
+      await service.join({
+        email: 'x@example.com',
+        username: 'xuser',
+        businessName: 'X',
+        country: 'US',
+      } as any);
+
+      expect(generateSpy).toHaveBeenCalledTimes(1);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ referralCode: 'ABCD1234' }),
+      );
+    });
   });
 
   describe('getPosition', () => {

@@ -306,3 +306,18 @@ fn test_set_pair_max_slippage_event_reversed_order_carries_caller_args() {
     assert_eq!(event.asset_b, token_a);
     assert_eq!(event.new_bps, 150);
 }
+
+#[test]
+fn test_admin_transfer() {
+    let (env, client, admin) = setup_env();
+    let successor = Address::generate(&env);
+    assert_eq!(client.get_admin(), admin);
+    assert!(client.try_transfer_admin(&admin, &admin).is_err());
+    assert!(client.try_transfer_admin(&successor, &admin).is_err());
+
+    client.transfer_admin(&admin, &successor);
+    assert_eq!(client.get_admin(), successor);
+    assert!(client.try_transfer_admin(&admin, &successor).is_err());
+    client.transfer_admin(&successor, &admin);
+    assert_eq!(client.get_admin(), admin);
+}

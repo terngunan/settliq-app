@@ -77,6 +77,37 @@ impl BatchPaymentContract {
         env.storage().instance().set(&DataKey::Counter, &0u64);
     }
 
+    /// Return the active administrator address.
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("contract not initialized"))
+    }
+
+    /// Rotate the administrator key. Admin-only.
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("contract not initialized"));
+        if caller != current_admin {
+            panic!("not admin");
+        }
+        if caller == new_admin {
+            panic!("cannot transfer to self");
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "BATCH"), soroban_sdk::Symbol::new(&env, "admin_transferred")),
+            (caller, new_admin),
+        );
+    }
+
     /// Update payment amount limits. Admin-only.
     pub fn set_limits(env: Env, min_amount: i128, max_amount: i128) {
         if min_amount <= 0 {
@@ -225,25 +256,3 @@ impl BatchPaymentContract {
                 (
                     id_bytes.clone(),
                     merchant.clone(),
-                    item.amount,
-                    item.memo.clone(),
-                    item.customer.clone(),
-                ),
-            );
-
-            payment_ids.push_back(id_bytes);
-        }
-
-        let final_counter = counter + count as u64;
-        env.storage().instance().set(&DataKey::Counter, &final_counter);
-
-        payment_ids
-    }
-
-    /// Admin: set or clear the optional MerchantRegistry contract address.
-    ///
-    /// Passing `Some(address)` enables merchant-approval gating in `create_batch`:
-    /// every merchant is checked against `MerchantRegistryClient::is_approved`
-    /// before the batch is processed.
-
-/* … truncated 1735 chars — edit only what you need near the top … */

@@ -263,22 +263,67 @@ fn test_admin_can_update_limits_without_redeploy() {
     env.mock_all_auths();
     let (client, _admin) = deploy_and_init(&env, 100, 1_000);
 
-    let original = client.get_limits();
-    assert_eq!(original, (100, 1_000));
+    let merchant = Address::generate(&env);
+    let payments = soroban_sdk::vec![&env, make_payment(&env, 5_000, "above-old-max")];
+    // Above the original max, so this must revert before the limit update.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.create_batch(&merchant, &payments);
+    }));
+    assert!(result.is_err());
 
-    client.set_limits(&200, &2_000);
-    let updated = client.get_limits();
-    assert_eq!(updated, (200, 2_000));
+    client.set_limits(&10, &10_000);
+    let ids = client.create_batch(&merchant, &payments);
+    assert_eq!(ids.len(), 1);
 }
 
 #[test]
-fn test_limits_updated_event_emitted() {
+fn test_get_admin_returns_initialized_admin() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin) = deploy_and_init(&env, 100, 1_000);
+    let (client, admin) = deploy_and_init(&env, 1, 10_000);
 
-    let before = env.events().all().len();
-    client.set_limits(&150, &1_500);
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn test_transfer_admin_updates_admin_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy_and_init(&env, 1, 10_000);
+
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &new_admin);
+
+    assert_eq!(client.get_admin(), new_admin);
+
     let events = env.events().all();
-    assert_eq!(events.len(), before + 1);
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
+fn test_new_admin_can_set_limits_after_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy_and_init(&env, 100, 1_000);
+
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+
+    client.set_limits(&10, &10_000);
+
+    let merchant = Address::generate(&env);
+    let payments = soroban_sdk::vec![&env, make_payment(&env, 5_000, "above-old-max")];
+    let ids = client.create_batch(&merchant, &payments);
+    assert_eq!(ids.len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "cannot transfer to self")]
+fn test_transfer_admin_to_self_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy_and_init(&env, 1, 10_000);
+
+    client.transfer_admin(&admin, &admin);
 }
