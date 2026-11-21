@@ -109,7 +109,7 @@ impl ReconciliationContract {
         env.events().publish(
             ("RECONCILIATION", "admin_transferred"),
             AdminTransferredEvent {
-                previous_admin: current_admin,
+                previous_admin: caller,
                 new_admin,
             },
         );
@@ -255,17 +255,4 @@ impl ReconciliationContract {
     pub fn hash_pair(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
         let mut buf = [0u8; 64];
         left.copy_into_slice(&mut buf[..32]);
-        right.copy_into_slice(&mut buf[32..]);
-        env.crypto().sha256(&soroban_sdk::Bytes::from_array(env, &buf)).to_bytes()
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{BytesN, Env, Vec};
-
-    fn setup() -> (Env, Rec
-
-/* … truncated 2077 chars — edit only what you need near the top … */
+        right.copy_into_slice(&
