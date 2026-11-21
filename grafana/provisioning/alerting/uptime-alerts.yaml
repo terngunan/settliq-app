@@ -1,144 +1,248 @@
 apiVersion: 1
 
-# ─── Contact Points ────────────────────────────────────────────────────────────
-# These are provisioned as defaults. Override credentials via Grafana UI or
-# environment variable substitution if your Grafana version supports it.
-contactPoints:
-  - orgId: 1
-    name: Settliq On-Call
-    receivers:
-      - uid: "oncall-email"
-        type: email
-        settings:
-          addresses: "oncall@settliq.xyz"
-          singleEmail: false
-        disableResolveMessage: false
+# Uptime alert rules for Settliq services.
+# Runbook: https://github.com/terngunan/settliq-app/blob/main/monitoring/README.md
 
-      - uid: "oncall-slack"
-        type: slack
-        settings:
-          url: "${GRAFANA_SLACK_WEBHOOK_URL}"
-          channel: "#alerts"
-          title: |
-            {{ if eq .Status "firing" }}🔴 Settliq Alert{{ else }}✅ Settliq Resolved{{ end }}
-          text: |
-            {{ range .Alerts }}
-            *{{ .Annotations.summary }}*
-            {{ .Annotations.description }}
-            {{ end }}
-        disableResolveMessage: false
-
-# ─── Notification Policies ────────────────────────────────────────────────────
-policies:
+groups:
   - orgId: 1
-    receiver: Settliq On-Call
-    group_by: ["alertname", "severity"]
-    group_wait: 30s
-    group_interval: 5m
-    repeat_interval: 1h
-    routes:
-      - receiver: Settliq On-Call
-        matchers:
-          - severity = critical
-        group_wait: 0s          # fire immediately for critical
-        repeat_interval: 15m
-
-# ─── Alert Rules ──────────────────────────────────────────────────────────────
-rules:
-  - orgId: 1
-    name: UptimeAlerts
-    folder: "Uptime & Availability"
+    name: uptime
+    folder: Settliq
     interval: 1m
     rules:
-
-      # ── High error rate (proxy for downtime in logs) ──────────────────────
-      - uid: "uptime-error-rate"
-        title: "API High Error Rate"
-        condition: "A"
+      - uid: uptime-api-down
+        title: API Down
+        condition: C
         data:
-          - refId: "A"
-            queryType: "range"
-            datasourceUid: "Loki"
-            relativeTimeRange:
-              from: 120
-              to: 0
-            model:
-              refId: "A"
-              expr: 'sum(rate({job="backend-logs", level="error"}[2m])) * 60 > 5'
-        noDataState: OK
-        execErrState: Alerting
-        for: 2m
-        annotations:
-          summary: "High API error rate detected"
-          description: "More than 5 errors/min for 2 consecutive minutes. Value: {{ $values.A.Value | printf \"%.1f\" }} errors/min. Check logs immediately."
-          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
-        labels:
-          severity: "critical"
-          component: "api"
-
-      # ── Health endpoint returning errors ──────────────────────────────────
-      - uid: "uptime-health-errors"
-        title: "Health Endpoint Errors"
-        condition: "A"
-        data:
-          - refId: "A"
-            queryType: "range"
-            datasourceUid: "Loki"
-            relativeTimeRange:
-              from: 120
-              to: 0
-            model:
-              refId: "A"
-              # Alert if /health or /health/ready logs errors
-              expr: 'count_over_time({job="backend-logs", level="error"} |= "/health" [2m]) > 3'
-        noDataState: OK
-        execErrState: Alerting
-        for: 1m
-        annotations:
-          summary: "Health endpoint is returning errors"
-          description: "The /health or /health/ready endpoint has logged errors in the last 2 minutes. This may indicate DB or Stellar connectivity issues."
-          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
-        labels:
-          severity: "critical"
-          component: "health"
-
-      # ── No logs at all (process may be down) ─────────────────────────────
-      - uid: "uptime-no-logs"
-        title: "API Process Silent (Possible Crash)"
-        condition: "A"
-        data:
-          - refId: "A"
-            queryType: "range"
-            datasourceUid: "Loki"
+          - refId: A
             relativeTimeRange:
               from: 300
               to: 0
+            datasourceUid: prometheus
             model:
-              refId: "A"
-              # If no logs at all for 5 minutes, the process is likely down
-              expr: 'sum(count_over_time({job="backend-logs"}[5m])) == 0'
-        noDataState: Alerting   # no data itself is the alert condition
+              editorMode: code
+              expr: up{job="settliq-api"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
         execErrState: Alerting
         for: 5m
         annotations:
-          summary: "No API logs for 5 minutes — process may be down"
-          description: "The backend has emitted zero log lines in the last 5 minutes. This strongly suggests the process has crashed or the log pipeline is broken."
-          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
+          summary: "Settliq API is down"
+          description: "The Settliq API has been unreachable for more than 5 minutes."
+          runbook_url: "https://github.com/terngunan/settliq-app/blob/main/monitoring/README.md"
         labels:
-          severity: "critical"
-          component: "api"
+          severity: critical
+          service: api
 
-      # ── Queue stalled ─────────────────────────────────────────────────────
-      - uid: "uptime-queue-stalled"
-        title: "Queue Processing Stalled"
-        condition: "A"
+      - uid: uptime-web-down
+        title: Web App Down
+        condition: C
         data:
-          - refId: "A"
-            queryType: "range"
-            datasourceUid: "Loki"
+          - refId: A
             relativeTimeRange:
-              from: 120
+              from: 300
               to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: up{job="settliq-web"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: "Settliq web app is down"
+          description: "The Settliq web app has been unreachable for more than 5 minutes."
+          runbook_url: "https://github.com/terngunan/settliq-app/blob/main/monitoring/README.md"
+        labels:
+          severity: critical
+          service: web
+
+      - uid: uptime-indexer-down
+        title: Indexer Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: up{job="settliq-indexer"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: "Settliq indexer is down"
+          description: "The Settliq indexer has been unreachable for more than 5 minutes."
+          runbook_url: "https://github.com/terngunan/settliq-app/blob/main/monitoring/README.md"
+        labels:
+          severity: critical
+          service: indexer
+
+      - uid: uptime-db-down
+        title: Database Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
             model:
               refId: "A"
               expr: 'count_over_time({job="backend-logs"} |= "processing rate dropped to zero" [2m]) > 0'
@@ -146,34 +250,84 @@ rules:
         execErrState: OK
         for: 2m
         annotations:
-          summary: "Queue processing has stalled"
-          description: "A Bull queue has stopped processing jobs. Settlement or webhook delivery may be delayed."
-          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
+          summary: "Settliq database is down"
+          description: "The Settliq Postgres database has been unreachable for more than 5 minutes."
+          runbook_url: "https://github.com/terngunan/settliq-app/blob/main/monitoring/README.md"
         labels:
-          severity: "warning"
-          component: "queue"
+          severity: critical
+          service: database
 
-      # ── Stellar monitor failures ──────────────────────────────────────────
-      - uid: "uptime-stellar-down"
-        title: "Stellar / Horizon Connectivity Lost"
-        condition: "A"
+      - uid: uptime-redis-down
+        title: Redis Down
+        condition: C
         data:
-          - refId: "A"
-            queryType: "range"
-            datasourceUid: "Loki"
+          - refId: A
             relativeTimeRange:
-              from: 120
+              from: 300
               to: 0
+            datasourceUid: prometheus
             model:
-              refId: "A"
-              expr: 'count_over_time({job="backend-logs", level="error"} |= "stellar" [2m]) > 2'
-        noDataState: OK
-        execErrState: OK
-        for: 2m
+              editorMode: code
+              expr: up{job="settliq-redis"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params: []
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
         annotations:
-          summary: "Stellar Horizon connectivity issues"
-          description: "Multiple Stellar-related errors in the last 2 minutes. Blockchain settlement may be impacted."
-          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
+          summary: "Settliq Redis is down"
+          description: "The Settliq Redis instance has been unreachable for more than 5 minutes."
+          runbook_url: "https://github.com/terngunan/settliq-app/blob/main/monitoring/README.md"
         labels:
-          severity: "critical"
-          component: "stellar"
+          severity: critical
+          service: redis
